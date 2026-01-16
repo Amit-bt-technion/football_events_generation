@@ -30,13 +30,13 @@ env/
 .venv
 
 # PyCharm
-../.idea/
+.idea/
 
 # VSCode
 .vscode/
 
 # Jupyter Notebook
-.ipynb_checkpoints
+.ipynb_checkpointsß
 
 # pyenv
 .python-version
