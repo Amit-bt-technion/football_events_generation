@@ -12,7 +12,7 @@ Get started with the Diffusion Transformer pipeline in 5 minutes!
 
 ```bash
 # 1. Clone the repository
-git clone <your-repo-url>
+git clone https://github.com/Amit-bt-technion/football_events_generation
 cd diffusion_transformer
 
 # 2. Install dependencies

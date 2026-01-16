@@ -8,7 +8,7 @@ on football event sequences. Supports two architectures:
 """
 
 __version__ = "0.2.0"
-__author__ = "Your Name"
+__author__ = "Amit Ben-Tzvi"
 
 from diffusion_transformer.models.dit import DiffusionTransformer
 from diffusion_transformer.models.unet import UNet1D
