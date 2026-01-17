@@ -13,7 +13,9 @@ import numpy as np
 import pickle
 
 from diffusion_transformer.models.diffusion import DiffusionProcess
-from diffusion_transformer.data.dataset import create_dataloaders
+from diffusion_transformer.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class Trainer:
@@ -236,8 +238,8 @@ class Trainer:
         """Cache intermediate diffusion samples for visualization."""
         self.model.eval()
         
-        print(f"Caching {self.args.num_cached_samples} intermediate samples...")
-        
+        logger.info(f"Caching {self.args.num_cached_samples} intermediate samples...")
+
         # Generate samples at various stages of denoising
         shape = (self.args.num_cached_samples, self.args.sequence_length, self.args.embedding_dim)
         
@@ -280,8 +282,8 @@ class Trainer:
         with open(cache_path, 'wb') as f:
             pickle.dump(samples_at_timesteps, f)
 
-        print(f"Cached samples saved to {cache_path}")
-    
+        logger.debug(f"Cached samples saved to {cache_path}")
+
     def save_checkpoint(self, is_best=False, filename=None):
         """Save model checkpoint."""
         if filename is None:

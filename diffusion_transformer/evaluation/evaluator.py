@@ -13,6 +13,9 @@ import json
 from torch.utils.data import DataLoader
 
 from diffusion_transformer.models.diffusion import DiffusionProcess
+from diffusion_transformer.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class Evaluator:
@@ -114,10 +117,10 @@ class Evaluator:
             # xg_model.load_state_dict(checkpoint['model_state_dict'])
             # xg_model.eval()
             # return xg_model
-            print("Warning: xG model loading not implemented yet")
+            logger.warning("xG model loading not implemented yet")
             return None
         except Exception as e:
-            print(f"Error loading xG model: {e}")
+            logger.error(f"Error loading xG model: {e}")
             return None
     
     @torch.no_grad()
@@ -155,7 +158,7 @@ class Evaluator:
         """Get real samples from test set."""
 
         num_samples = min(num_samples, len(self.test_dataset))
-        print(f"Using {num_samples} real samples for evaluation")
+        logger.info(f"Using {num_samples} real samples for evaluation")
         indices = np.random.choice(len(self.test_dataset), num_samples, replace=False)
         samples = []
         
@@ -319,8 +322,8 @@ class Evaluator:
     
     def evaluate(self):
         """Run full evaluation."""
-        print(f"\nGenerating {self.args.num_eval_samples} samples for evaluation...")
-        
+        logger.info(f"Generating {self.args.num_eval_samples} samples for evaluation...")
+
         # Generate samples
         generated = self.generate_samples(
             self.args.num_eval_samples,
@@ -330,56 +333,56 @@ class Evaluator:
         # Get real samples
         real = self.get_real_samples(self.args.num_eval_samples)
         
-        print("\nCalculating metrics...")
+        logger.info("Calculating evaluation metrics...")
         results = {}
         
         # Statistical metrics
         if self.args.use_statistical_metrics:
-            print("Computing statistical metrics...")
+            logger.info("Computing statistical metrics...")
             stat_metrics = self.calculate_statistical_metrics(generated, real)
             results['statistical'] = stat_metrics
             
-            print("\nStatistical Metrics:")
+            logger.info("Statistical Metrics:")
             for key, value in stat_metrics.items():
-                print(f"  {key}: {value:.4f}")
-        
+                logger.info(f"  {key}: {value:.4f}")
+
         # xG metrics
         if self.args.use_xg_metrics:
-            print("\nComputing xG-based metrics...")
+            logger.info("Computing xG-based metrics...")
             xg_metrics = self.calculate_xg_metrics(generated, real)
             results['xg'] = xg_metrics
             
             if xg_metrics:
-                print("\nxG Metrics:")
+                logger.info("xG Metrics:")
                 for key, value in xg_metrics.items():
-                    print(f"  {key}: {value:.4f}")
-        
+                    logger.info(f"  {key}: {value:.4f}")
+
         # Diversity metrics
-        print("\nComputing diversity metrics...")
+        logger.info("Computing diversity metrics...")
         diversity_metrics = self.calculate_diversity_metrics(generated)
         results['diversity'] = diversity_metrics
         
-        print("\nDiversity Metrics:")
+        logger.info("Diversity Metrics:")
         for key, value in diversity_metrics.items():
-            print(f"  {key}: {value:.4f}")
-        
+            logger.info(f"  {key}: {value:.4f}")
+
         # Coverage
-        print("\nComputing coverage...")
+        logger.info("Computing coverage...")
         coverage = self.calculate_coverage(generated, real)
         results['coverage'] = coverage
-        print(f"Coverage: {coverage:.4f}")
-        
+        logger.info(f"Coverage: {coverage:.4f}")
+
         # Combined score
         combined_score = self.calculate_combined_score(results)
         results['combined_score'] = combined_score
-        print(f"\nCombined Score: {combined_score:.4f}")
-        
+        logger.info(f"Combined Score: {combined_score:.4f}")
+
         # Save results
         output_path = os.path.join(self.args.output_dir, f"{self.model_type}_evaluation_results.json")
         with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        print(f"\nResults saved to {output_path}")
-        
+            json.dump(results, f, indent=2, default=float)
+        logger.info(f"Results saved to {output_path}")
+
         # Save samples
         samples_path = os.path.join(self.args.output_dir, f"{self.model_type}_generated_samples.pkl")
         with open(samples_path, 'wb') as f:
@@ -387,8 +390,8 @@ class Evaluator:
                 'generated': generated,
                 'real': real
             }, f)
-        print(f"Samples saved to {samples_path}")
-        
+        logger.info(f"Samples saved to {samples_path}")
+
         return results
     
     def calculate_combined_score(self, results):

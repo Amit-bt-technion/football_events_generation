@@ -2,11 +2,14 @@
 Main entry point for Diffusion Transformer pipeline.
 Supports multiple tasks including naive generation, training, and evaluation.
 
-Run: nohup srun -c 2 --gres=gpu:2 python3 main.py --csv_dir ../match_csv/ --autoencoder_path ../encoder > log.out 2> log.out &
+Run:
+- nohup srun -c 2 --gres=gpu:2 python3 main.py --csv_dir ../match_csv/ --autoencoder_path ../encoder > log.out 2> log.out &
+- rm -rf .venv; uv venv; source .venv/bin/activate; uv pip uninstall diffusion_transformer; uv build; uv pip install dist/diffusion_transformer-0.2.0-py3-none-any.whl
 """
 
 import argparse
 import os
+from pathlib import Path
 
 import torch
 import numpy as np
@@ -14,6 +17,9 @@ import random
 
 from diffusion_transformer import create_dataloaders
 from diffusion_transformer.data.preprocessing import load_and_embed_matches
+from diffusion_transformer.utils import setup_logging, get_logger
+
+logger = get_logger(__name__)
 
 
 def set_seed(seed):
@@ -45,10 +51,10 @@ def parse_args():
     parser.add_argument("--csv_dir", type=str, default="csv")
 
     # Data settings
-    parser.add_argument("--min_gap", type=int, default=1)
+    parser.add_argument("--min_gap", type=int, default=5)
     parser.add_argument("--max_gap", type=int, default=None)
-    parser.add_argument("--max_samples_per_match", type=int, default=1000)
-    parser.add_argument("--max_samples_total", type=int, default=1000000)
+    parser.add_argument("--max_samples_per_match", type=int, default=100)
+    parser.add_argument("--max_samples_total", type=int, default=20000000)
     parser.add_argument("--force_recompute", action="store_true", default=False)
     parser.add_argument("--sequence_length", type=int, default=50, help="Length of event sequences")
     parser.add_argument("--embedding_dim", type=int, default=32, help="Dimension of event embeddings")
@@ -105,7 +111,7 @@ def parse_args():
     # Miscellaneous
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to use")
-    parser.add_argument("--num_workers", type=int, default=4, help="Number of data loader workers")
+    parser.add_argument("--num_workers", type=int, default=0, help="Number of data loader workers")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--verbose", action="store_true", default=False)
     
@@ -116,46 +122,65 @@ def main():
     """Main function."""
     args = parse_args()
     
+    # Setup logging
+    log_file = Path(args.output_dir) / "run.log" if args.output_dir else None
+    log_level = "DEBUG" if args.verbose else "INFO"
+    setup_logging(level=log_level, log_file=log_file)
+
+    logger.info("="*80)
+    logger.info("Diffusion Transformer - Football Event Sequence Generation")
+    logger.info("="*80)
+    logger.info(f"Step: {args.step}, Task: {args.task}, Model: {args.model_type}")
+    logger.info(f"Device: {args.device}")
+    logger.info(f"Random seed: {args.seed}")
+
     # Set seed for reproducibility
     set_seed(args.seed)
-    
-    # Create directories
-    os.makedirs(args.cache_dir, exist_ok=True)
-    os.makedirs(args.models_dir, exist_ok=True)
-    os.makedirs(args.output_dir, exist_ok=True)
-    os.makedirs(os.path.join(args.cache_dir, "diffusion"), exist_ok=True)
+    logger.debug(f"Set random seed to {args.seed} for reproducibility")
 
-    print("Loading match events...")
+    # Create directories
+    for dir_path in [args.cache_dir, args.models_dir, args.output_dir,
+                     os.path.join(args.cache_dir, "diffusion")]:
+        os.makedirs(dir_path, exist_ok=True)
+    logger.debug(f"Created directories: cache={args.cache_dir}, models={args.models_dir}, output={args.output_dir}")
+
+    logger.info("Loading match events and embeddings...")
     events_dict, embeddings_dict = load_and_embed_matches(args)
+    logger.info(f"Loaded {len(events_dict)} matches")
 
     # Create dataloaders
-    print("Creating dataloaders...")
+    logger.info("Creating dataloaders...")
     train_loader, val_loader, test_loader = create_dataloaders(args, events_dict, embeddings_dict)
+    logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
 
-    print(f"Running step: {args.step}, task: {args.task}")
-    print(f"Device: {args.device}")
-    
-    if args.step == "train":
-        from diffusion_transformer.training.trainer import Trainer
-        trainer = Trainer(args, train_loader, val_loader)
-        trainer.train()
-        
-    elif args.step == "evaluate":
-        from diffusion_transformer.evaluation.evaluator import Evaluator
-        evaluator = Evaluator(args, test_loader)
-        evaluator.evaluate()
-        
-    elif args.step == "naive_generation":
-        from diffusion_transformer.evaluation.generator import Generator
-        generator = Generator(args, events_dict, embeddings_dict )
-        generator.generate_and_visualize()
-        
-    elif args.step == "visualize":
-        from diffusion_transformer.visualization.visualizer import Visualizer
-        visualizer = Visualizer(args)
-        visualizer.visualize_all()
-    
-    print(f"{args.step} step completed successfully!")
+    try:
+        if args.step == "train":
+            from diffusion_transformer.training.trainer import Trainer
+            trainer = Trainer(args, train_loader, val_loader)
+            trainer.train()
+
+        elif args.step == "evaluate":
+            from diffusion_transformer.evaluation.evaluator import Evaluator
+            evaluator = Evaluator(args, test_loader)
+            evaluator.evaluate()
+
+        elif args.step == "naive_generation":
+            from diffusion_transformer.evaluation.generator import Generator
+            generator = Generator(args, events_dict, embeddings_dict)
+            generator.generate_and_visualize()
+
+        elif args.step == "visualize":
+            from diffusion_transformer.visualization.visualizer import Visualizer
+            visualizer = Visualizer(args)
+            visualizer.visualize_all()
+
+        logger.info("="*80)
+        logger.info(f"{args.step.upper()} completed successfully!")
+        logger.info("="*80)
+
+    except Exception as e:
+        logger.error(f"Error during {args.step}: {str(e)}", exc_info=True)
+        raise
 
 
 if __name__ == "__main__":

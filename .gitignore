@@ -24,85 +24,57 @@ share/python-wheels/
 MANIFEST
 
 # Virtual environments
+.venv/
 venv/
 ENV/
 env/
-.venv
+.env
 
-# PyCharm
-.idea/
-
-# VSCode
+# IDEs
 .vscode/
-
-# Jupyter Notebook
-.ipynb_checkpointsß
-
-# pyenv
-.python-version
-
-# Pytest
-.pytest_cache/
-htmlcov/
-.coverage
-.coverage.*
-coverage.xml
-*.cover
-.hypothesis/
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Type checking
-.pyre/
-.pytype/
-
-# Project specific
-cache/
-!cache/.gitkeep
-!models/.gitkeep
-outputs/
-!outputs/.gitkeep
-
-# Data files (large)
-*.pkl
-*.pickle
-*.pt
-*.pth
-*.ckpt
-*.safetensors
-
-# Logs
-*.log
-logs/
-
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
+.idea/
 *.swp
 *.swo
 *~
+.DS_Store
 
-# Documentation builds
-docs/_build/
-docs/_static/
-docs/_templates/
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
 
-# Distribution
-*.tar.gz
-*.zip
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
 
-# Environment variables
-.env
-.env.local
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Linting
+.ruff_cache/
+
+# Project specific
+cache/
+models/*.pt
+outputs/*.png
+outputs/*.gif
+outputs/*.json
+outputs/*.pkl
+outputs/*.log
+*.log
+
+# Data files (uncomment if needed)
+# csv/*.csv
+# *.npy
+
+# Temporary files
+*.tmp
+*.bak
+*.orig
+

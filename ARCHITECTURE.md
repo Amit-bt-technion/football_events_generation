@@ -1,453 +1,256 @@
 # Architecture Overview
 
-Visual guide to the diffusion model architectures.
+This document provides a technical overview of the diffusion model architectures.
 
-## System Architecture
+## System Components
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Diffusion Pipeline                        │
+│                    Pipeline Overview                         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                              │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌─────────┐ │
-│  │  Data    │──▶│ Training │──▶│Generation│──▶│  Eval   │ │
-│  │ Loading  │   │  Loop    │   │ Sampling │   │ Metrics │ │
-│  └──────────┘   └──────────┘   └──────────┘   └─────────┘ │
+│  Data Loading → Training → Evaluation → Visualization       │
+│       ↓             ↓           ↓              ↓            │
+│  Embeddings    Checkpoints  Metrics        Plots/GIFs       │
 │                                                              │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## Model Comparison
+## Model Architectures
 
 ### DiT (Diffusion Transformer)
 
-```
-Input: (batch, 50, 32)
-    ↓
-┌─────────────────────────┐
-│   Input Projection      │  Linear: 32 → 512
-│   + Position Embedding  │
-└─────────────────────────┘
-    ↓
-┌─────────────────────────┐
-│   Timestep Embedding    │  Sinusoidal → MLP
-│   (batch, 512)          │
-└─────────────────────────┘
-    ↓
-┌─────────────────────────┐
-│  DiT Block 1            │ ╮
-│  ├─ AdaLN (t)          │ │
-│  ├─ Self-Attention     │ │  Repeated
-│  └─ MLP                │ │  8 times
-├─────────────────────────┤ │
-│  DiT Block 2            │ │
-│  ...                    │ ╯
-├─────────────────────────┤
-│  DiT Block 8            │
-└─────────────────────────┘
-    ↓
-┌─────────────────────────┐
-│   Layer Norm            │
-│   + Output Projection   │  512 → 32
-└─────────────────────────┘
-    ↓
-Output: (batch, 50, 32)
-```
-
-**Key Features**:
-- Self-attention: All positions attend to all
-- Adaptive LayerNorm: Modulated by timestep
-- Position-aware: Absolute position embeddings
-- Parameters: ~18M (512 dim, 8 layers)
-
-### U-Net
+**Input:** (batch, seq_len=50, dim=32)
 
 ```
-Input: (batch, 50, 32)
-    ↓ Transpose to (batch, 32, 50)
 ┌─────────────────────────┐
-│   Input Projection      │  Conv1d: 32 → 128
+│  Input Projection       │  32 → model_dim (e.g., 512)
+│  + Position Embedding   │
 └─────────────────────────┘
-    ↓
+           ↓
 ┌─────────────────────────┐
-│   Timestep Embedding    │  Sinusoidal → MLP
-│   (batch, 512)          │
+│  Timestep Embedding     │  Sinusoidal → MLP
 └─────────────────────────┘
-    ↓
+           ↓
+┌─────────────────────────┐
+│  DiT Block × N          │  N = num_layers (e.g., 8)
+│  ├─ AdaLN (t-cond)     │  - Adaptive LayerNorm
+│  ├─ Self-Attention     │  - Multi-head attention
+│  └─ MLP                │  - Feed-forward network
+└─────────────────────────┘
+           ↓
+┌─────────────────────────┐
+│  Output Projection      │  model_dim → 32
+└─────────────────────────┘
+```
+
+**Key Features:**
+- Self-attention across all sequence positions
+- Timestep-adaptive normalization (AdaLN)
+- Positional embeddings for sequence order
+- ~18M parameters (default: 512 dim, 8 layers)
+
+**Best For:** Capturing long-range dependencies and complex patterns
+
+### U-Net (DDPM-style)
+
+**Input:** (batch, seq_len=50, dim=32) → transpose to (batch, 32, 50)
+
+```
+┌─────────────────────────┐
+│  Input Projection       │  32 → base_channels
+└─────────────────────────┘
+           ↓
+┌─────────────────────────┐
+│  Timestep Embedding     │  Sinusoidal → MLP
+└─────────────────────────┘
+           ↓
 ╔═════════════════════════╗
 ║      ENCODER            ║
 ╠═════════════════════════╣
-║  Level 1 (128 ch)      ║──┐ Skip 1
-║  ├─ ResBlock + Attn    ║  │
-║  ├─ ResBlock + Attn    ║  │
-║  └─ Downsample ÷2      ║  │
+║  Level 1 (ch × 1)      ║──┐ Skip connection
+║  ├─ ResBlock           ║  │
+║  ├─ Attention?         ║  │
+║  └─ Downsample         ║  │
 ╠═════════════════════════╣  │
-║  Level 2 (256 ch)      ║──┼─┐ Skip 2
-║  ├─ ResBlock + Attn    ║  │ │
-║  ├─ ResBlock + Attn    ║  │ │
-║  └─ Downsample ÷2      ║  │ │
+║  Level 2 (ch × 2)      ║──┼─┐
+║  ├─ ResBlock           ║  │ │
+║  ├─ Attention?         ║  │ │
+║  └─ Downsample         ║  │ │
 ╠═════════════════════════╣  │ │
-║  Level 3 (512 ch)      ║──┼─┼─┐ Skip 3
-║  ├─ ResBlock + Attn    ║  │ │ │
-║  ├─ ResBlock + Attn    ║  │ │ │
-║  └─ Downsample ÷2      ║  │ │ │
+║  Level 3 (ch × 4)      ║──┼─┼─┐
+║  └─ ...                ║  │ │ │
 ╚═════════════════════════╝  │ │ │
-    ↓                        │ │ │
+           ↓                 │ │ │
 ┌─────────────────────────┐  │ │ │
-│    BOTTLENECK (1024)    │  │ │ │
-│  ├─ ResBlock            │  │ │ │
-│  ├─ Attention           │  │ │ │
-│  └─ ResBlock            │  │ │ │
+│     BOTTLENECK          │  │ │ │
+│  ├─ ResBlock           │  │ │ │
+│  ├─ Attention          │  │ │ │
+│  └─ ResBlock           │  │ │ │
 └─────────────────────────┘  │ │ │
-    ↓                        │ │ │
+           ↓                 │ │ │
 ╔═════════════════════════╗  │ │ │
 ║      DECODER            ║  │ │ │
 ╠═════════════════════════╣  │ │ │
-║  Level 3 (512 ch)      ║  │ │ │
-║  ├─ Upsample ×2         ║  │ │ │
-║  ├─ Concat(Skip 3) ◄────┼──┘ │ │
-║  ├─ ResBlock + Attn    ║    │ │
-║  └─ ResBlock + Attn    ║    │ │
+║  Level 3 (ch × 4)      ║←─┘ │ │
+║  ├─ Upsample           ║    │ │
+║  ├─ Concat skip        ║    │ │
+║  └─ ResBlock           ║    │ │
 ╠═════════════════════════╣    │ │
-║  Level 2 (256 ch)      ║    │ │
-║  ├─ Upsample ×2         ║    │ │
-║  ├─ Concat(Skip 2) ◄────┼────┘ │
-║  ├─ ResBlock + Attn    ║      │
-║  └─ ResBlock + Attn    ║      │
+║  Level 2 (ch × 2)      ║←───┘ │
+║  └─ ...                ║      │
 ╠═════════════════════════╣      │
-║  Level 1 (128 ch)      ║      │
-║  ├─ Upsample ×2         ║      │
-║  ├─ Concat(Skip 1) ◄────┼──────┘
-║  ├─ ResBlock + Attn    ║
-║  └─ ResBlock + Attn    ║
+║  Level 1 (ch × 1)      ║←─────┘
+║  └─ ...                ║
 ╚═════════════════════════╝
-    ↓
+           ↓
 ┌─────────────────────────┐
-│   GroupNorm + SiLU      │
-│   + Output Projection   │  128 → 32
-└─────────────────────────┘
-    ↓ Transpose back
-Output: (batch, 50, 32)
-```
-
-**Key Features**:
-- Multi-scale: 4 resolution levels
-- Skip connections: Direct encoder→decoder paths
-- Local attention: Convolutional receptive fields
-- Parameters: ~8M (128 base, 4 levels)
-
-## Detailed Component Breakdown
-
-### DiT Components
-
-#### AdaLN (Adaptive Layer Norm)
-```
-Input x: (batch, seq, dim)
-Timestep t_emb: (batch, cond_dim)
-    ↓
-scale, shift = Linear(t_emb).chunk(2)
-    ↓
-x_norm = LayerNorm(x)
-    ↓
-output = x_norm * (1 + scale) + shift
-```
-
-#### DiT Block
-```
-┌─────────────────────────┐
-│  Input x                │
-├─────────────────────────┤
-│  h = AdaLN(x, t)       │
-│  h = MultiHeadAttn(h)  │
-│  x = x + h (residual)  │
-├─────────────────────────┤
-│  h = AdaLN(x, t)       │
-│  h = MLP(h)            │  [Linear → GELU → Dropout → Linear]
-│  x = x + h (residual)  │
+│  Output Projection      │  base_channels → 32
 └─────────────────────────┘
 ```
 
-### U-Net Components
+**Key Features:**
+- Multi-scale processing with downsampling/upsampling
+- Skip connections preserve information
+- Efficient 1D convolutions
+- ~8M parameters (default: 128 base channels)
 
-#### ResBlock
-```
-┌─────────────────────────┐
-│  Input x: (B, C, L)     │
-├─────────────────────────┤
-│  h = GroupNorm(x)       │
-│  h = SiLU(h)            │
-│  h = Conv1d(h)          │
-├─────────────────────────┤
-│  t_emb = MLP(timestep)  │
-│  h = h + t_emb[:,:,None]│  Add time
-├─────────────────────────┤
-│  h = GroupNorm(h)       │
-│  h = SiLU(h)            │
-│  h = Dropout(h)         │
-│  h = Conv1d(h)          │
-├─────────────────────────┤
-│  if C_in != C_out:      │
-│    x = Conv1d_1x1(x)    │
-│  output = x + h         │
-└─────────────────────────┘
-```
-
-#### Attention Block
-```
-┌─────────────────────────┐
-│  Input x: (B, C, L)     │
-├─────────────────────────┤
-│  h = GroupNorm(x)       │
-│  Q, K, V = Conv1d(h)    │  Split into 3
-├─────────────────────────┤
-│  Reshape for multi-head │
-│  Q: (B, H, C/H, L)      │  H = num_heads
-│  K: (B, H, C/H, L)      │
-│  V: (B, H, C/H, L)      │
-├─────────────────────────┤
-│  attn = softmax(QK^T/√d)│
-│  h = attn @ V           │
-├─────────────────────────┤
-│  Reshape back           │
-│  h = Conv1d_1x1(h)      │
-│  output = x + h         │
-└─────────────────────────┘
-```
+**Best For:** Efficient training and local pattern modeling
 
 ## Diffusion Process
 
-```
-Training:
-    Clean x₀ ────┐
-                  │
-    Noise ε  ────┼──▶ Forward Diffusion ──▶ Noisy x_t
-                  │         q(x_t|x_0)
-    Timestep t ───┘
-                  
-                  ├──▶ Model(x_t, t) ──▶ Predicted ε̂
-                  │
-                  └──▶ Loss = MSE(ε, ε̂)
-
-
-Sampling:
-    Random noise x_T
-           │
-           ▼
-    ┌────────────────┐
-    │ Model(x_t, t)  │ ──▶ Predict ε̂
-    └────────────────┘
-           │
-           ▼
-    Remove some noise
-           │
-           ▼
-        x_{t-1}
-           │
-           ▼ (repeat 1000 times for DDPM)
-        x_0 (clean sample)
-```
-
-## Memory and Computation
-
-### DiT
-```
-Forward Pass:
-- Input projection: O(L × d × D)
-- Attention (per layer): O(L² × D)
-- MLP (per layer): O(L × D²)
-- Total per layer: O(L² × D + L × D²)
-
-With L=50, D=512:
-- Attention: 50² × 512 = 1.3M ops
-- MLP: 50 × 512² × 4 = 52M ops
-- 8 layers ≈ 420M FLOPs per forward pass
-
-Memory:
-- Model weights: ~18M params × 4 bytes = 72 MB
-- Activations: ~6 GB (batch 128, mixed precision)
-```
-
-### U-Net
-```
-Forward Pass:
-- Convolutions: O(L × C² × k)
-- Attention (at some levels): O(L² × C)
-- Skip concatenations: O(L × C)
-
-With L=50, C=128, k=3:
-- Conv per block: 50 × 128² × 3 = 2.5M ops
-- Attention (2 levels): 2 × (50² × 128) = 640K ops
-- 4 levels × 2 blocks ≈ 20M FLOPs per forward pass
-
-Memory:
-- Model weights: ~8M params × 4 bytes = 32 MB
-- Activations: ~4 GB (batch 128, mixed precision)
-```
-
-## Training Flow
+### Forward Process (Noise Addition)
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Training Loop                       │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  1. Load batch of clean sequences x₀                │
-│     ↓                                                │
-│  2. Sample random timesteps t ~ Uniform(0, T)       │
-│     ↓                                                │
-│  3. Sample noise ε ~ N(0, I)                        │
-│     ↓                                                │
-│  4. Create noisy x_t = √(ᾱ_t) x₀ + √(1-ᾱ_t) ε      │
-│     ↓                                                │
-│  5. Predict noise: ε̂ = Model(x_t, t)               │
-│     ↓                                                │
-│  6. Compute loss: L = MSE(ε, ε̂)                     │
-│     ↓                                                │
-│  7. Backprop and update weights                     │
-│     ↓                                                │
-│  8. [Every N epochs] Cache intermediate samples     │
-│     ↓                                                │
-│  9. [Every M epochs] Validate and save checkpoint   │
-│                                                      │
-└─────────────────────────────────────────────────────┘
+x₀ (clean) → x₁ → x₂ → ... → x_T (noise)
+
+q(xₜ | x₀) = 𝒩(xₜ; √ᾱₜ x₀, (1 - ᾱₜ)I)
 ```
 
-## Sampling Flow (DDIM)
+Where:
+- `αₜ = 1 - βₜ` (beta schedule)
+- `ᾱₜ = ∏ᵢ₌₁ᵗ αᵢ` (cumulative product)
+
+### Reverse Process (Denoising)
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  DDIM Sampling                       │
-├─────────────────────────────────────────────────────┤
-│                                                      │
-│  1. Start with pure noise x_T ~ N(0, I)             │
-│     ↓                                                │
-│  2. Select subset of timesteps (e.g., 50 of 1000)  │
-│     [1000, 980, 960, ..., 40, 20, 0]               │
-│     ↓                                                │
-│  FOR each timestep t in reverse:                    │
-│     │                                                │
-│     3. Predict noise: ε̂ = Model(x_t, t)            │
-│     ↓                                                │
-│     4. Predict x₀: x̂₀ = (x_t - √(1-ᾱ_t)ε̂) / √(ᾱ_t) │
-│     ↓                                                │
-│     5. Denoise: x_{t-1} = √(ᾱ_{t-1}) x̂₀ +          │
-│                           √(1-ᾱ_{t-1}) ε̂           │
-│     ↓                                                │
-│  END FOR                                             │
-│     ↓                                                │
-│  6. Return x_0 (clean sample)                       │
-│                                                      │
-└─────────────────────────────────────────────────────┘
+x_T (noise) → x_{T-1} → ... → x₁ → x₀ (clean)
+
+pθ(x_{t-1} | xₜ) = 𝒩(x_{t-1}; μθ(xₜ, t), Σθ(xₜ, t))
 ```
 
-## File Structure
+**DDPM Sampling:** Full T-step reverse process
+**DDIM Sampling:** Deterministic, faster (e.g., 50 steps)
+
+### Noise Schedules
+
+1. **Linear:** `β_t = β_start + (β_end - β_start) × t/T`
+2. **Cosine:** `ᾱₜ = cos²((t/T + s)/(1 + s) × π/2)` (recommended)
+3. **Quadratic:** Squared linear interpolation
+
+## Training Objective
+
+```
+L = 𝔼ₜ,x₀,ε [‖ε - εθ(√ᾱₜ x₀ + √(1-ᾱₜ) ε, t)‖²]
+```
+
+Where:
+- `ε ~ 𝒩(0, I)` is random noise
+- `εθ` is the denoising model (DiT or U-Net)
+- `t ~ Uniform(1, T)` is random timestep
+
+## Code Organization
 
 ```
 diffusion_transformer/
-│
 ├── data/
-│   └── dataset.py          ◄─── Loads embeddings, creates batches
-│
+│   ├── dataset.py           # PyTorch Dataset and DataLoader
+│   ├── preprocessing.py     # Event embedding and caching
+│   └── event_autoencoder_model.py  # Autoencoder (if used)
 ├── models/
-│   ├── dit.py              ◄─── Transformer denoising model
-│   ├── unet.py             ◄─── CNN denoising model
-│   └── diffusion.py        ◄─── Forward/reverse diffusion logic
-│
+│   ├── diffusion.py         # DiffusionProcess (noise schedules, sampling)
+│   ├── dit.py              # DiT architecture
+│   └── unet.py             # U-Net architecture
 ├── training/
-│   └── trainer.py          ◄─── Training loop, optimization
-│
+│   └── trainer.py          # Training loop, optimization, checkpointing
 ├── evaluation/
-│   ├── evaluator.py        ◄─── Metrics computation
-│   └── generator.py        ◄─── Sample generation
-│
-└── visualization/
-    └── visualizer.py       ◄─── Plotting and visualization
+│   ├── evaluator.py        # Metrics computation
+│   └── generator.py        # Sample generation
+├── visualization/
+│   └── visualizer.py       # Plotting and animations
+└── utils/
+    └── logger.py           # Centralized logging
 ```
 
-## Decision Tree: Which Model?
+## Evaluation Metrics
 
-```
-                    Start
-                      │
-                      ▼
-            Have > 16GB GPU memory?
-                 /          \
-               Yes           No
-                │             │
-                ▼             ▼
-    Want best quality?    Use U-Net
-         /        \        (efficient)
-       Yes        No
-        │          │
-        ▼          ▼
-     Use DiT    Try both,
-    (large)    benchmark
-```
+### Statistical Metrics
+- **Frechet Distance:** Distribution similarity between generated and real samples
+- **Mean/Std Difference:** First and second moment matching
 
-## Computational Graph Example
+### Diversity Metrics
+- **Average Pairwise Distance:** Measures sample diversity
+- **Unique Ratio:** Fraction of unique samples
 
-### DiT Forward Pass
-```
-x₀ [B,50,32] ──┬──► Linear [32→512] ──┐
-               │                       │
-t [B] ─────────┴──► TimestepMLP ──────┼──► x [B,50,512]
-                                       │        │
-                                       │        ▼
-                                       │   ┌─────────┐
-                                       │   │ Block 1 │
-                                       │   └────┬────┘
-                                       │        │
-                                       │   ┌────▼────┐
-                                       └──▶│ Block 2 │
-                                            └────┬────┘
-                                                 ⋮
-                                            ┌────▼────┐
-                                            │ Block 8 │
-                                            └────┬────┘
-                                                 │
-                                            LayerNorm
-                                                 │
-                                           Linear [512→32]
-                                                 │
-                                                 ▼
-                                           ε̂ [B,50,32]
-```
+### Coverage
+- **Coverage Score:** Percentage of real samples with close generated counterparts
 
-### U-Net Forward Pass
+### Combined Score
 ```
-x₀ [B,50,32] ──► Conv1d [32→128] ──┐
-                                    │
-t [B] ──► TimestepMLP ─────────────┼──────────┐
-                                    │          │
-                                    ▼          │
-                              ┌──────────┐    │
-                              │ Encoder  │    │
-                              │  Level 1 │────┼──skip1
-                              │  ↓ ÷2    │    │
-                              │  Level 2 │────┼──skip2
-                              │  ↓ ÷2    │    │
-                              │  Level 3 │────┼──skip3
-                              │  ↓ ÷2    │    │
-                              └────┬─────┘    │
-                                   │          │
-                              ┌────▼─────┐    │
-                              │Bottleneck│    │
-                              └────┬─────┘    │
-                                   │          │
-                              ┌────▼─────┐    │
-                              │ Decoder  │    │
-                              │  ↑ ×2    │◄───┘ (uses t)
-                              │  +skip3  │
-                              │  ↑ ×2    │
-                              │  +skip2  │
-                              │  ↑ ×2    │
-                              │  +skip1  │
-                              └────┬─────┘
-                                   │
-                              Conv1d [128→32]
-                                   │
-                                   ▼
-                              ε̂ [B,50,32]
+Score = (1 - w) × Realism + w × Diversity
 ```
+where `w = diversity_weight`
 
-This architecture supports efficient diffusion-based generation of football event sequences with two complementary approaches!
+## Hyperparameter Guidelines
+
+### Training
+
+| Hyperparameter | Recommended | Notes |
+|----------------|-------------|-------|
+| Batch Size | 128 | Larger = more stable |
+| Learning Rate | 1e-4 | With warmup |
+| Warmup Epochs | 5 | Stabilizes training |
+| Grad Clip | 1.0 | Prevents explosions |
+| Num Timesteps | 1000 | More = better quality |
+
+### DiT
+
+| Parameter | Small | Medium | Large |
+|-----------|-------|--------|-------|
+| model_dim | 256 | 512 | 768 |
+| num_layers | 4 | 8 | 12 |
+| num_heads | 4 | 8 | 12 |
+| Parameters | ~4M | ~18M | ~45M |
+
+### U-Net
+
+| Parameter | Small | Medium | Large |
+|-----------|-------|--------|-------|
+| model_dim | 64 | 128 | 192 |
+| channel_mult | 1,2,4 | 1,2,4,8 | 1,2,4,8 |
+| num_res_blocks | 1 | 2 | 3 |
+| Parameters | ~2M | ~8M | ~15M |
+
+## Performance Characteristics
+
+### Speed (per epoch on GPU)
+
+| Model | Small | Medium | Large |
+|-------|-------|--------|-------|
+| DiT | ~25s | ~45s | ~90s |
+| U-Net | ~15s | ~35s | ~50s |
+
+### Memory Usage
+
+| Model | Small | Medium | Large |
+|-------|-------|--------|-------|
+| DiT | ~2GB | ~4GB | ~8GB |
+| U-Net | ~1.5GB | ~3GB | ~6GB |
+
+## References
+
+1. **DiT:** Peebles & Xie. "Scalable Diffusion Models with Transformers." ICCV 2023.
+2. **U-Net:** Ronneberger et al. "U-Net: Convolutional Networks for Biomedical Image Segmentation." MICCAI 2015.
+3. **DDPM:** Ho et al. "Denoising Diffusion Probabilistic Models." NeurIPS 2020.
+4. **DDIM:** Song et al. "Denoising Diffusion Implicit Models." ICLR 2021.
+
