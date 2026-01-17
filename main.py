@@ -1,10 +1,6 @@
 """
 Main entry point for Diffusion Transformer pipeline.
 Supports multiple tasks including naive generation, training, and evaluation.
-
-Run:
-- nohup srun -c 2 --gres=gpu:2 python3 main.py --csv_dir ../match_csv/ --autoencoder_path ../encoder > log.out 2> log.out &
-- rm -rf .venv; uv venv; source .venv/bin/activate; uv pip uninstall diffusion_transformer; uv build; uv pip install dist/diffusion_transformer-0.2.0-py3-none-any.whl
 """
 
 import argparse
@@ -38,7 +34,7 @@ def parse_args():
     )
     
     # Task and modes paths
-    parser.add_argument("--step", type=str, default="train", choices=["train", "evaluate", "naive_generation", "visualize"], help="Step to perform")
+    parser.add_argument("--step", type=str, default="train", choices=["train", "evaluate", "generate", "visualize"], help="Step to perform")
     parser.add_argument("--task", type=str, default="full", choices=["full", "shot_only"], help="Task to perform")
     parser.add_argument("--task_params", type=str, default=None)
 
@@ -154,24 +150,24 @@ def main():
     logger.info(f"Train batches: {len(train_loader)}, Val batches: {len(val_loader)}, Test batches: {len(test_loader)}")
 
     try:
-        if args.step == "train":
+        if args.step in ["train", "all"]:
             from diffusion_transformer.training.trainer import Trainer
             trainer = Trainer(args, train_loader, val_loader)
             trainer.train()
 
-        elif args.step == "evaluate":
+        elif args.step in ["evaluate", "all"]:
             from diffusion_transformer.evaluation.evaluator import Evaluator
             evaluator = Evaluator(args, test_loader)
             evaluator.evaluate()
 
-        elif args.step == "naive_generation":
+        elif args.step in ["generate", "all"]:
             from diffusion_transformer.evaluation.generator import Generator
             generator = Generator(args, events_dict, embeddings_dict)
             generator.generate_and_visualize()
 
-        elif args.step == "visualize":
+        elif args.step in ["visualize", "all"]:
             from diffusion_transformer.visualization.visualizer import Visualizer
-            visualizer = Visualizer(args)
+            visualizer = Visualizer(args, events_dict, embeddings_dict)
             visualizer.visualize_all()
 
         logger.info("="*80)

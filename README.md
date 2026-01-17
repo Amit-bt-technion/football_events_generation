@@ -81,7 +81,7 @@ python main.py --step evaluate --model_type dit \
 
 ```bash
 # Generate samples
-python main.py --step naive_generation --model_type dit \
+python main.py --step generate --model_type dit \
     --checkpoint models/dit_best_model.pt \
     --num_gen_samples 100
 ```
@@ -158,7 +158,7 @@ football_events_generation/
 
 ### Common Arguments
 
-- `--step`: Task to perform (`train`, `evaluate`, `naive_generation`, `visualize`)
+- `--step`: Task to perform (`train`, `evaluate`, `generate`, `visualize`)
 - `--model_type`: Model architecture (`dit` or `unet`)
 - `--device`: Device to use (`cuda` or `cpu`)
 - `--seed`: Random seed for reproducibility (default: 42)

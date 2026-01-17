@@ -21,9 +21,13 @@ class Generator:
         
         Args:
             args: Argument namespace with configuration
+            events_dict: Dictionary of event data by match_id
+            embeddings_dict: Dictionary of embeddings by match_id
         """
         self.args = args
         self.device = torch.device(args.device)
+        self.events_dict = events_dict
+        self.embeddings_dict = embeddings_dict
         
         # Load model based on checkpoint or args
         print("Loading model...")
@@ -31,7 +35,7 @@ class Generator:
         # Try to load checkpoint to get model type
         model_type = args.model_type
         if args.checkpoint and os.path.exists(args.checkpoint):
-            checkpoint = torch.load(args.checkpoint, map_location=self.device)
+            checkpoint = torch.load(args.checkpoint, map_location=self.device, weights_only=False)
             model_type = checkpoint.get('model_type', args.model_type)
             print(f"Detected model type from checkpoint: {model_type}")
         
@@ -259,21 +263,21 @@ class Generator:
         
         print(f"\nGenerated samples saved to {output_path}")
         print(f"Sample shape: {all_samples.shape}")
-        
+
         # Decode samples if autoencoder is available
         decoded = self.decode_samples(all_samples[:num_traj_samples])
         
         # Create visualizations
         print("\nCreating visualizations...")
-        visualizer = Visualizer(self.args)
+        visualizer = Visualizer(self.args, self.events_dict, self.embeddings_dict)
         
         # Visualize trajectory
-        visualizer.visualize_diffusion_trajectory(trajectory, decoded)
+        visualizer.visualize_diffusion_trajectory(trajectory)
         
         # Visualize generated samples
         visualizer.visualize_generated_samples(all_samples[:50])  # Visualize first 50
         
-        # t-SNE visualization if we have enough samples
+        # t-SNE/UMAP visualization if we have enough samples
         if len(all_samples) >= 50:
             visualizer.visualize_embedding_space(all_samples)
         

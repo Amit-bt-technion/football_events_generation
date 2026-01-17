@@ -10,36 +10,45 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 import seaborn as sns
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
+from sklearn.metrics import silhouette_score
 import pickle
 from pathlib import Path
+try:
+    import umap
+    UMAP_AVAILABLE = True
+except ImportError:
+    UMAP_AVAILABLE = False
+    print("Warning: UMAP not available. Install with: pip install umap-learn")
 
 
 class Visualizer:
     """Visualizer for diffusion transformer results."""
     
-    def __init__(self, args):
+    def __init__(self, args, events_dict=None, embeddings_dict=None):
         """
         Initialize visualizer.
-        
-        Args:
+                Args:
             args: Argument namespace with configuration
+            events_dict: Optional dictionary of event data by match_id
+            embeddings_dict: Optional dictionary of embeddings by match_id
         """
         self.args = args
         self.output_dir = args.output_dir
         os.makedirs(self.output_dir, exist_ok=True)
+        self.events_dict = events_dict
+        self.embeddings_dict = embeddings_dict
         
         # Set style
         sns.set_style("whitegrid")
         plt.rcParams['figure.figsize'] = (12, 8)
         plt.rcParams['font.size'] = 10
     
-    def visualize_diffusion_trajectory(self, trajectory, decoded_events=None):
+    def visualize_diffusion_trajectory(self, trajectory):
         """
         Visualize the diffusion process from noise to clean samples.
         
         Args:
             trajectory: List of dicts with 'timestep' and 'samples'
-            decoded_events: Optional decoded events for visualization
         """
         if not trajectory:
             print("No trajectory data to visualize")
@@ -140,15 +149,244 @@ class Visualizer:
         
         print(f"Sample grid saved to {output_path}")
     
-    def visualize_embedding_space(self, samples, real_samples=None):
+    def visualize_embedding_space(self, samples, real_samples=None, real_event_types=None):
         """
-        Visualize embedding space using t-SNE and PCA.
+        Visualize embedding space using t-SNE and UMAP, colored by event types.
+        Shows clustering of events based on their type, similar to t-SNE/UMAP analysis.
+        
+        Compares:
+        - Generated samples: Embeddings produced by diffusion model (from noise -> denoised embeddings)
+        - Real samples: Original embeddings from load_and_embed_matches (encoded real events)
+        
+        Both are in the same 32D embedding space from the autoencoder, so they can be
+        directly compared. Real events are colored by their event type (extracted from
+        events_dict). Generated events are shown as black 'x' markers since they don't
+        have ground-truth event types.
+        
+        Args:
+            samples: Generated samples from diffusion model (N, seq_len, embedding_dim)
+            real_samples: Optional real samples for comparison (not used if events_dict is available)
+            real_event_types: Optional event types for real samples (auto-extracted if not provided)
+        """
+        print("Visualizing embedding space with event type clustering...")
+        
+        # If we have events_dict and embeddings_dict, extract event types from real data
+        if self.events_dict is not None and self.embeddings_dict is not None and real_event_types is None:
+            print("Extracting event types from real events...")
+            real_event_types = []
+            real_embeddings_list = []
+            
+            # Sample a subset of events for visualization (max 5000)
+            max_samples = 5000
+            for match_id, events in self.events_dict.items():
+                if match_id in self.embeddings_dict:
+                    embeddings = self.embeddings_dict[match_id]
+                    # Extract event types (index 0 of event vector)
+                    event_types = events[:, 0]
+                    real_event_types.extend(event_types)
+                    real_embeddings_list.append(embeddings)
+                    
+                    if len(real_event_types) >= max_samples:
+                        break
+            
+            if real_embeddings_list:
+                real_embeddings = np.vstack(real_embeddings_list)
+                real_event_types = np.array(real_event_types[:max_samples])
+                real_embeddings = real_embeddings[:max_samples]
+                
+                # Reconstruct real_samples from embeddings for comparison
+                # Shape: (num_events, embedding_dim) -> we'll treat each event as a sequence of length 1
+                # Or we can just use the embeddings directly
+                print(f"Using {len(real_event_types)} real events for comparison")
+        
+        # Determine if we have event type information
+        has_event_types = (real_event_types is not None and len(real_event_types) > 0)
+        
+        if not has_event_types:
+            print("Warning: No event type information available. Using basic visualization.")
+            # Fall back to simple visualization
+            return self._visualize_embedding_space_simple(samples, real_samples)
+        
+        # Prepare data for dimensionality reduction
+        # For generated samples, we'll use individual events from sequences
+        print("Preparing generated samples...")
+        # Flatten to individual events: (N, seq_len, emb_dim) -> (N*seq_len, emb_dim)
+        gen_events = samples.reshape(-1, samples.shape[-1])
+        
+        # Sample a subset if too large
+        max_gen_samples = 5000
+        if len(gen_events) > max_gen_samples:
+            indices = np.random.choice(len(gen_events), max_gen_samples, replace=False)
+            gen_events = gen_events[indices]
+        
+        # For generated samples, we don't have true event types, so we'll show them separately
+        # or try to decode them if we have an autoencoder
+        
+        # Combine real and generated for joint embedding
+        print("Combining real and generated embeddings...")
+        all_embeddings = np.vstack([real_embeddings, gen_events])
+        
+        # Create labels: real event types and a special label for generated
+        all_labels = np.concatenate([
+            real_event_types,
+            np.full(len(gen_events), -1)  # -1 for generated samples
+        ])
+        
+        # Apply PCA for initial dimensionality reduction (if needed)
+        print("Applying PCA for dimensionality reduction...")
+        if all_embeddings.shape[1] > 50:
+            pca = PCA(n_components=50)
+            all_embeddings_reduced = pca.fit_transform(all_embeddings)
+        else:
+            all_embeddings_reduced = all_embeddings
+        
+        # Apply t-SNE
+        print("Computing t-SNE (this may take a while)...")
+        tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(all_embeddings) // 4))
+        tsne_result = tsne.fit_transform(all_embeddings_reduced)
+        
+        # Split results back
+        real_tsne = tsne_result[:len(real_event_types)]
+        gen_tsne = tsne_result[len(real_event_types):]
+        
+        # Apply UMAP if available
+        umap_result = None
+        if UMAP_AVAILABLE:
+            print("Computing UMAP...")
+            try:
+                umap_reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=min(15, len(all_embeddings) // 10))
+                umap_result = umap_reducer.fit_transform(all_embeddings_reduced)
+                real_umap = umap_result[:len(real_event_types)]
+                gen_umap = umap_result[len(real_event_types):]
+            except Exception as e:
+                print(f"UMAP failed: {e}")
+                umap_result = None
+        
+        # Calculate silhouette scores for real events only
+        try:
+            silhouette_tsne = silhouette_score(real_tsne, real_event_types)
+            print(f"Silhouette score (t-SNE, real events): {silhouette_tsne:.3f}")
+        except:
+            silhouette_tsne = None
+        
+        silhouette_umap = None
+        if umap_result is not None:
+            try:
+                silhouette_umap = silhouette_score(real_umap, real_event_types)
+                print(f"Silhouette score (UMAP, real events): {silhouette_umap:.3f}")
+            except:
+                silhouette_umap = None
+        
+        # Create visualization
+        n_plots = 2 if umap_result is not None else 1
+        fig, axes = plt.subplots(1, n_plots, figsize=(10 * n_plots, 8))
+        if n_plots == 1:
+            axes = [axes]
+        
+        # Get unique event types for coloring
+        unique_event_types = np.unique(real_event_types)
+        n_event_types = len(unique_event_types)
+        
+        # Create a colormap
+        cmap = plt.cm.get_cmap('tab20' if n_event_types <= 20 else 'hsv')
+        colors = [cmap(i / n_event_types) for i in range(n_event_types)]
+        event_type_to_color = {et: colors[i] for i, et in enumerate(unique_event_types)}
+        
+        # Plot t-SNE
+        ax = axes[0]
+        
+        # Plot real events by type
+        for i, event_type in enumerate(unique_event_types):
+            mask = real_event_types == event_type
+            ax.scatter(
+                real_tsne[mask, 0], 
+                real_tsne[mask, 1],
+                c=[event_type_to_color[event_type]],
+                alpha=0.6,
+                s=20,
+                label=f'Real: {event_type:.2f}',
+                edgecolors='none'
+            )
+        
+        # Plot generated events
+        ax.scatter(
+            gen_tsne[:, 0],
+            gen_tsne[:, 1],
+            c='black',
+            alpha=0.3,
+            s=15,
+            marker='x',
+            label='Generated',
+            linewidths=1
+        )
+        
+        title = 't-SNE: Event Type Clustering'
+        if silhouette_tsne is not None:
+            title += f' (Silhouette: {silhouette_tsne:.3f})'
+        ax.set_title(title, fontsize=14, fontweight='bold')
+        ax.set_xlabel('t-SNE Dimension 1', fontsize=12)
+        ax.set_ylabel('t-SNE Dimension 2', fontsize=12)
+        
+        # Add legend with smaller font
+        ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=1)
+        
+        # Plot UMAP if available
+        if umap_result is not None:
+            ax = axes[1]
+            
+            # Plot real events by type
+            for i, event_type in enumerate(unique_event_types):
+                mask = real_event_types == event_type
+                ax.scatter(
+                    real_umap[mask, 0],
+                    real_umap[mask, 1],
+                    c=[event_type_to_color[event_type]],
+                    alpha=0.6,
+                    s=20,
+                    label=f'Real: {event_type:.2f}',
+                    edgecolors='none'
+                )
+            
+            # Plot generated events
+            ax.scatter(
+                gen_umap[:, 0],
+                gen_umap[:, 1],
+                c='black',
+                alpha=0.3,
+                s=15,
+                marker='x',
+                label='Generated',
+                linewidths=1
+            )
+            
+            title = 'UMAP: Event Type Clustering'
+            if silhouette_umap is not None:
+                title += f' (Silhouette: {silhouette_umap:.3f})'
+            ax.set_title(title, fontsize=14, fontweight='bold')
+            ax.set_xlabel('UMAP Dimension 1', fontsize=12)
+            ax.set_ylabel('UMAP Dimension 2', fontsize=12)
+            
+            # Add legend with smaller font
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8, ncol=1)
+        
+        plt.tight_layout()
+        output_path = os.path.join(self.output_dir, 'embedding_space.png')
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Embedding space visualization saved to {output_path}")
+        print(f"Real events: {len(real_event_types)}, Generated events: {len(gen_events)}")
+        print(f"Number of unique event types: {n_event_types}")
+    
+    def _visualize_embedding_space_simple(self, samples, real_samples=None):
+        """
+        Simple fallback visualization without event type information.
         
         Args:
             samples: Generated samples
             real_samples: Optional real samples for comparison
         """
-        print("Visualizing embedding space...")
+        print("Using simple embedding space visualization (no event type info)...")
         
         # Flatten sequences
         samples_flat = samples.reshape(samples.shape[0], -1)
@@ -158,7 +396,7 @@ class Visualizer:
         samples_pca = pca.fit_transform(samples_flat)
         
         # Apply t-SNE
-        print("Computing t-SNE (this may take a while)...")
+        print("Computing t-SNE...")
         tsne = TSNE(n_components=2, random_state=42, perplexity=30)
         
         if real_samples is not None:
