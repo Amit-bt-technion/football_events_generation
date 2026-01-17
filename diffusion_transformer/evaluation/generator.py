@@ -8,7 +8,6 @@ import numpy as np
 import pickle
 from tqdm import tqdm
 
-from diffusion_transformer.models.dit import DiffusionTransformer
 from diffusion_transformer.models.diffusion import DiffusionProcess
 from diffusion_transformer.visualization.visualizer import Visualizer
 
@@ -16,7 +15,7 @@ from diffusion_transformer.visualization.visualizer import Visualizer
 class Generator:
     """Generator for naive generation task."""
     
-    def __init__(self, args):
+    def __init__(self, args, events_dict: dict[str, np.ndarray], embeddings_dict: dict[str, np.ndarray]):
         """
         Initialize generator.
         
@@ -78,7 +77,7 @@ class Generator:
             # Try to load best model
             best_model_path = os.path.join(args.models_dir, f"{model_type}_best_model.pt")
             if os.path.exists(best_model_path):
-                checkpoint = torch.load(best_model_path, map_location=self.device)
+                checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 print(f"Loaded best model from {best_model_path}")
             else:
@@ -188,7 +187,7 @@ class Generator:
         
         timesteps = list(range(self.diffusion.num_timesteps))[::-1]
         
-        for t in tqdm(timesteps, desc="Generating with trajectory"):
+        for t in tqdm(timesteps, desc="Generating with trajectory", disable=not self.args.verbose):
             t_batch = torch.full((batch_size,), t, device=device, dtype=torch.long)
             x = self.diffusion.p_sample(self.model, x, t_batch)
             
@@ -214,12 +213,10 @@ class Generator:
         if self.autoencoder is None:
             print("Warning: No autoencoder available for decoding")
             return None
-        
-        # TODO: Implement decoding using autoencoder
-        # decoded = self.autoencoder.decode(torch.tensor(samples).to(self.device))
-        # return decoded.cpu().numpy()
-        
-        return None
+
+        decoded = self.autoencoder.decode(torch.tensor(samples).to(self.device))
+        return decoded.cpu().numpy()
+
     
     def generate_and_visualize(self):
         """Generate samples and create visualizations."""

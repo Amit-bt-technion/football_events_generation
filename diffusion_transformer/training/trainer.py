@@ -7,12 +7,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.cuda.amp import autocast, GradScaler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 import pickle
-from pathlib import Path
 
-from diffusion_transformer.models.dit import DiffusionTransformer
 from diffusion_transformer.models.diffusion import DiffusionProcess
 from diffusion_transformer.data.dataset import create_dataloaders
 
@@ -20,7 +19,7 @@ from diffusion_transformer.data.dataset import create_dataloaders
 class Trainer:
     """Trainer for Diffusion Transformer."""
     
-    def __init__(self, args):
+    def __init__(self, args, train_loader: DataLoader, val_loader: DataLoader):
         """
         Initialize trainer.
         
@@ -29,10 +28,9 @@ class Trainer:
         """
         self.args = args
         self.device = torch.device(args.device)
-        
-        # Create dataloaders
-        print("Creating dataloaders...")
-        self.train_loader, self.val_loader, self.test_loader = create_dataloaders(args)
+
+        self.train_loader = train_loader
+        self.val_loader = val_loader
         
         # Create model based on type
         print(f"Creating {args.model_type.upper()} model...")
@@ -154,12 +152,11 @@ class Trainer:
         self.model.train()
         total_loss = 0
         
-        pbar = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch+1}")
+        pbar = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch+1}", disable=not self.args.verbose)
         
         for batch_idx, batch in enumerate(pbar):
             # Move to device
-            x_0 = batch['original'].to(self.device)  # Clean sequences
-            mask = batch['mask'].to(self.device)
+            x_0 = batch.to(self.device)  # Clean sequences
             
             # Sample random timesteps
             batch_size = x_0.shape[0]
@@ -178,7 +175,7 @@ class Trainer:
             # Predict noise
             if self.scaler is not None:
                 with autocast():
-                    noise_pred = self.model(x_t, t, mask=(1 - mask).bool())
+                    noise_pred = self.model(x_t, t)
                     loss = nn.functional.mse_loss(noise_pred, noise)
                 
                 # Backward pass with gradient scaling
@@ -189,7 +186,7 @@ class Trainer:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                noise_pred = self.model(x_t, t, mask=(1 - mask).bool())
+                noise_pred = self.model(x_t, t)
                 loss = nn.functional.mse_loss(noise_pred, noise)
                 
                 # Backward pass
@@ -214,9 +211,8 @@ class Trainer:
         self.model.eval()
         total_loss = 0
         
-        for batch in tqdm(self.val_loader, desc="Validation"):
-            x_0 = batch['original'].to(self.device)
-            mask = batch['mask'].to(self.device)
+        for batch in tqdm(self.val_loader, desc="Validation", disable=not self.args.verbose):
+            x_0 = batch.to(self.device)
             
             batch_size = x_0.shape[0]
             t = torch.randint(
@@ -228,7 +224,7 @@ class Trainer:
             noise = torch.randn_like(x_0)
             x_t = self.diffusion.q_sample(x_0, t, noise)
             
-            noise_pred = self.model(x_t, t, mask=(1 - mask).bool())
+            noise_pred = self.model(x_t, t)
             loss = nn.functional.mse_loss(noise_pred, noise)
             
             total_loss += loss.item()
@@ -283,7 +279,7 @@ class Trainer:
         
         with open(cache_path, 'wb') as f:
             pickle.dump(samples_at_timesteps, f)
-        
+
         print(f"Cached samples saved to {cache_path}")
     
     def save_checkpoint(self, is_best=False, filename=None):
@@ -307,7 +303,7 @@ class Trainer:
         if self.scaler is not None:
             checkpoint['scaler_state_dict'] = self.scaler.state_dict()
         
-        torch.save(checkpoint, checkpoint_path)
+        torch.save(checkpoint, str(checkpoint_path))
         print(f"Checkpoint saved to {checkpoint_path}")
         
         if is_best:

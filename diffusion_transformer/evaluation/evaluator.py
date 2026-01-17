@@ -5,21 +5,20 @@ Evaluation module with realism and diversity metrics.
 import os
 import torch
 import numpy as np
-from tqdm import tqdm
 from scipy import linalg
 from sklearn.metrics import pairwise_distances
 import pickle
 import json
 
-from diffusion_transformer.models.dit import DiffusionTransformer
+from torch.utils.data import DataLoader
+
 from diffusion_transformer.models.diffusion import DiffusionProcess
-from diffusion_transformer.data.dataset import EventSequenceDataset
 
 
 class Evaluator:
     """Evaluator for generated sequences."""
     
-    def __init__(self, args):
+    def __init__(self, args, test_dataset: DataLoader):
         """
         Initialize evaluator.
         
@@ -28,6 +27,7 @@ class Evaluator:
         """
         self.args = args
         self.device = torch.device(args.device)
+        self.test_dataset = test_dataset
         
         # Load model based on checkpoint or args
         print("Loading model...")
@@ -81,7 +81,7 @@ class Evaluator:
             # Try to load best model
             best_model_path = os.path.join(args.models_dir, f"{model_type}_best_model.pt")
             if os.path.exists(best_model_path):
-                checkpoint = torch.load(best_model_path, map_location=self.device)
+                checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
                 print(f"Loaded best model from {best_model_path}")
             else:
@@ -96,17 +96,6 @@ class Evaluator:
             beta_start=args.beta_start,
             beta_end=args.beta_end,
             device=self.device
-        )
-        
-        # Load real data for comparison
-        print("Loading real data...")
-        self.test_dataset = EventSequenceDataset(
-            embeddings_path=args.embeddings_path,
-            sequence_length=args.sequence_length,
-            split="test",
-            train_ratio=args.train_split,
-            val_ratio=args.val_split,
-            seed=args.seed
         )
         
         # Load xG model if needed
@@ -160,15 +149,19 @@ class Evaluator:
             )
         
         return samples.cpu().numpy()
-    
+
+
     def get_real_samples(self, num_samples):
         """Get real samples from test set."""
+
+        num_samples = min(num_samples, len(self.test_dataset))
+        print(f"Using {num_samples} real samples for evaluation")
         indices = np.random.choice(len(self.test_dataset), num_samples, replace=False)
         samples = []
         
         for idx in indices:
-            sample = self.test_dataset[int(idx)]
-            samples.append(sample['original'].numpy())
+            sample = self.test_dataset.dataset[int(idx)]
+            samples.append(sample.numpy())
         
         return np.stack(samples)
     

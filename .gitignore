@@ -62,7 +62,6 @@ dmypy.json
 # Project specific
 cache/
 !cache/.gitkeep
-models/
 !models/.gitkeep
 outputs/
 !outputs/.gitkeep

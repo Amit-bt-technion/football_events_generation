@@ -9,7 +9,7 @@ Complete installation instructions for the Diffusion Transformer package.
 ```bash
 # Clone the repository
 git clone https://github.com/Amit-bt-technion/football_events_generation.git
-cd diffusion-transformer
+cd football_events_generation
 
 # Install in editable mode
 pip install -e .
@@ -50,7 +50,7 @@ Best for development and experimentation:
 ```bash
 # Clone repository
 git clone https://github.com/Amit-bt-technion/football_events_generation.git
-cd diffusion-transformer
+cd football_events_generation
 
 # Create virtual environment (recommended)
 python -m venv venv
@@ -76,7 +76,7 @@ pip install git+https://github.com/Amit-bt-technion/football_events_generation.g
 Or from a local copy:
 
 ```bash
-pip install /path/to/diffusion-transformer
+pip install /path/to/football_events_generation
 ```
 
 ### Method 3: From Source (Build Wheel)
@@ -84,7 +84,7 @@ pip install /path/to/diffusion-transformer
 ```bash
 # Clone and build
 git clone https://github.com/Amit-bt-technion/football_events_generation.git
-cd diffusion-transformer
+cd football_events_generation
 
 # Build wheel
 pip install build
@@ -215,7 +215,7 @@ make setup-dirs
 **Solution**:
 ```bash
 # Ensure you're in the right directory
-cd /path/to/diffusion-transformer
+cd /path/to/football_events_generation
 
 # Reinstall
 pip install -e .
@@ -326,7 +326,7 @@ For contributors:
 ```bash
 # Clone repository
 git clone https://github.com/Amit-bt-technion/football_events_generation.git
-cd diffusion-transformer
+cd football_events_generation
 
 # Create virtual environment
 python -m venv venv
@@ -375,7 +375,7 @@ docker run --gpus all -it diffusion-transformer
 ### Update from Git
 
 ```bash
-cd diffusion-transformer
+cd football_events_generation
 git pull
 pip install -e . --upgrade
 ```
