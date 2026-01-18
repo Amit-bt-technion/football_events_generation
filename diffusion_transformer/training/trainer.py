@@ -27,6 +27,8 @@ class Trainer:
         
         Args:
             args: Argument namespace with configuration
+            train_loader: DataLoader for training data
+            val_loader: DataLoader for validation data
         """
         self.args = args
         self.device = torch.device(args.device)
@@ -35,7 +37,7 @@ class Trainer:
         self.val_loader = val_loader
         
         # Create model based on type
-        print(f"Creating {args.model_type.upper()} model...")
+        logger.info(f"Creating {args.model_type.upper()} model...")
         
         if args.model_type == "dit":
             from diffusion_transformer.models.dit import DiffusionTransformer
@@ -128,10 +130,10 @@ class Trainer:
         """Main training loop."""
         import time
         
-        print(f"\nStarting training for {self.args.num_epochs} epochs...")
-        print(f"Current best validation loss: {self.best_val_loss:.6f}")
-        print(f"Validation will run every {self.args.eval_every} epochs")
-        print(f"Checkpoints will be saved every {self.args.save_every} epochs")
+        logger.info(f"Starting training for {self.args.num_epochs} epochs...")
+        logger.info(f"Current best validation loss: {self.best_val_loss:.6f}")
+        logger.info(f"Validation will run every {self.args.eval_every} epochs")
+        logger.info(f"Checkpoints will be saved every {self.args.save_every} epochs")
         
         for epoch in range(self.current_epoch, self.args.num_epochs):
             self.current_epoch = epoch
@@ -153,29 +155,29 @@ class Trainer:
             if (epoch + 1) % self.args.eval_every == 0:
                 val_loss = self.validate()
                 if val_loss is None:
-                    print(
+                    logger.info(
                         f"Epoch {epoch+1}/{self.args.num_epochs} - "
                         f"Train Loss: {train_loss:.4f}, "
                         f"Val Loss: N/A (empty val_loader), "
                         f"LR: {current_lr:.2e}, Time: {epoch_time:.1f}s"
                     )
-                    print("  → Skipping best-model saving because validation set is empty.")
+                    logger.info("  → Skipping best-model saving because validation set is empty.")
                 else:
                     self.val_losses.append(val_loss)
-                    print(f"Epoch {epoch+1}/{self.args.num_epochs} - "
+                    logger.info(f"Epoch {epoch+1}/{self.args.num_epochs} - "
                           f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
                           f"LR: {current_lr:.2e}, Time: {epoch_time:.1f}s")
                     
                     # Save best model
                     if val_loss < self.best_val_loss:
-                        print(f"  → New best validation loss: {val_loss:.6f} (previous: {self.best_val_loss:.6f})")
+                        logger.info(f"  → New best validation loss: {val_loss:.6f} (previous: {self.best_val_loss:.6f})")
                         self.best_val_loss = val_loss
                         self.save_checkpoint(is_best=True)
-                        print(f"  → Best model saved!")
+                        logger.info(f"  → Best model saved!")
                     else:
-                        print(f"  → Validation loss did not improve (best: {self.best_val_loss:.6f})")
+                        logger.info(f"  → Validation loss did not improve (best: {self.best_val_loss:.6f})")
             else:
-                print(f"Epoch {epoch+1}/{self.args.num_epochs} - "
+                logger.info(f"Epoch {epoch+1}/{self.args.num_epochs} - "
                       f"Train Loss: {train_loss:.4f}, LR: {current_lr:.2e}, Time: {epoch_time:.1f}s")
             
             # Save checkpoint
@@ -187,7 +189,7 @@ class Trainer:
             if (epoch + 1) % self.args.cache_interval == 0:
                 self.cache_samples(epoch)
         
-        print("\nTraining completed!")
+        logger.info("Training completed!")
         self.save_checkpoint(is_best=False, filename=f"{self.args.model_type}_final_model.pt")
         
         # Final training visualization
@@ -378,7 +380,7 @@ class Trainer:
             # Verify the file was actually saved
             if os.path.exists(checkpoint_path):
                 file_size = os.path.getsize(checkpoint_path) / (1024 * 1024)  # MB
-                print(f"✓ Checkpoint saved to {checkpoint_path} ({file_size:.2f} MB)")
+                logger.info(f"✓ Checkpoint saved to {checkpoint_path} ({file_size:.2f} MB)")
             else:
                 logger.error(f"✗ Failed to save checkpoint - file does not exist: {checkpoint_path}")
                 return
@@ -396,15 +398,19 @@ class Trainer:
                     
         except Exception as e:
             logger.error(f"✗ Error saving checkpoint: {e}", exc_info=True)
-            print(f"✗ ERROR: Failed to save checkpoint: {e}")
-            print(f"   Models directory: {self.args.models_dir}")
-            print(f"   Directory exists: {os.path.exists(self.args.models_dir)}")
-            print(f"   Directory writable: {os.access(self.args.models_dir, os.W_OK) if os.path.exists(self.args.models_dir) else 'N/A'}")
+            logger.error(f"   Models directory: {self.args.models_dir}")
+            logger.error(f"   Directory exists: {os.path.exists(self.args.models_dir)}")
+            logger.error(f"   Directory writable: {os.access(self.args.models_dir, os.W_OK) if os.path.exists(self.args.models_dir) else 'N/A'}")
             raise
     
     def load_checkpoint(self, checkpoint_path):
-        """Load model checkpoint."""
-        print(f"Loading checkpoint from {checkpoint_path}")
+        """
+        Load model checkpoint.
+        
+        Args:
+            checkpoint_path: Path to the checkpoint file
+        """
+        logger.info(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
         self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -429,7 +435,7 @@ class Trainer:
         if self.scaler is not None and 'scaler_state_dict' in checkpoint:
             self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
         
-        print(f"Resumed from epoch {self.current_epoch}")
+        logger.info(f"Resumed from epoch {self.current_epoch}")
     
     def plot_training_progress(self):
         """Plot and save training progress visualizations."""
@@ -650,19 +656,19 @@ class Trainer:
         
         logger.info(f"Detailed metrics saved to {csv_path}")
         
-        # Print summary to console
-        print("\n" + "="*60)
-        print("TRAINING SUMMARY")
-        print("="*60)
-        print(f"Model Type: {metrics['model_type'].upper()}")
-        print(f"Total Epochs: {metrics['total_epochs']}")
-        print(f"Best Val Loss: {metrics['best_val_loss']:.6f}")
-        print(f"Final Train Loss: {metrics['final_train_loss']:.6f}")
+        # Log summary
+        logger.info("="*60)
+        logger.info("TRAINING SUMMARY")
+        logger.info("="*60)
+        logger.info(f"Model Type: {metrics['model_type'].upper()}")
+        logger.info(f"Total Epochs: {metrics['total_epochs']}")
+        logger.info(f"Best Val Loss: {metrics['best_val_loss']:.6f}")
+        logger.info(f"Final Train Loss: {metrics['final_train_loss']:.6f}")
         if metrics['final_val_loss']:
-            print(f"Final Val Loss: {metrics['final_val_loss']:.6f}")
+            logger.info(f"Final Val Loss: {metrics['final_val_loss']:.6f}")
         if metrics['total_training_time']:
-            print(f"Total Training Time: {metrics['total_training_time']/3600:.2f} hours")
-            print(f"Avg Time per Epoch: {metrics['avg_epoch_time']:.1f}s")
+            logger.info(f"Total Training Time: {metrics['total_training_time']/3600:.2f} hours")
+            logger.info(f"Avg Time per Epoch: {metrics['avg_epoch_time']:.1f}s")
         if metrics['avg_grad_norm']:
-            print(f"Avg Gradient Norm: {metrics['avg_grad_norm']:.4f}")
-        print("="*60 + "\n")
+            logger.info(f"Avg Gradient Norm: {metrics['avg_grad_norm']:.4f}")
+        logger.info("="*60)

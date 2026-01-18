@@ -27,20 +27,21 @@ class Evaluator:
         
         Args:
             args: Argument namespace with configuration
+            test_dataset: DataLoader for test data
         """
         self.args = args
         self.device = torch.device(args.device)
         self.test_dataset = test_dataset
         
         # Load model based on checkpoint or args
-        print("Loading model...")
+        logger.info("Loading model...")
         
         # Try to load checkpoint to get model type
         model_type = args.model_type
         if args.checkpoint and os.path.exists(args.checkpoint):
             checkpoint = torch.load(args.checkpoint, map_location=self.device)
             model_type = checkpoint.get('model_type', args.model_type)
-            print(f"Detected model type from checkpoint: {model_type}")
+            logger.info(f"Detected model type from checkpoint: {model_type}")
         
         # Create model
         if model_type == "dit":
@@ -79,14 +80,14 @@ class Evaluator:
         if args.checkpoint:
             checkpoint = torch.load(args.checkpoint, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Loaded checkpoint from {args.checkpoint}")
+            logger.info(f"Loaded checkpoint from {args.checkpoint}")
         else:
             # Try to load best model
             best_model_path = os.path.join(args.models_dir, f"{model_type}_best_model.pt")
             if os.path.exists(best_model_path):
                 checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
-                print(f"Loaded best model from {best_model_path}")
+                logger.info(f"Loaded best model from {best_model_path}")
             else:
                 raise ValueError(f"No checkpoint provided and no {model_type}_best_model.pt found!")
         
@@ -104,7 +105,7 @@ class Evaluator:
         # Load xG model if needed
         self.xg_model = None
         if args.use_xg_metrics and os.path.exists(args.xg_model_path):
-            print("Loading xG model...")
+            logger.info("Loading xG model...")
             self.xg_model = self.load_xg_model(args.xg_model_path)
     
     def load_xg_model(self, model_path):
@@ -255,7 +256,7 @@ class Evaluator:
         # 2. Compare xG distributions
         # 3. Check if xG values are reasonable
         
-        print("Warning: xG metrics not fully implemented yet")
+        logger.warning("xG metrics not fully implemented yet")
         
         return metrics
     

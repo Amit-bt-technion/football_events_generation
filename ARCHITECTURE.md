@@ -1,22 +1,22 @@
 # Architecture Overview
 
-This document provides a technical overview of the diffusion model architectures.
+This document provides a technical overview of the Diffusion Transformer (DiT) architecture used in this project.
 
 ## System Components
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Pipeline Overview                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                              │
-│  Data Loading → Training → Evaluation → Visualization       │
-│       ↓             ↓           ↓              ↓            │
-│  Embeddings    Checkpoints  Metrics        Plots/GIFs       │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Data Loading → Training → Evaluation → Visualization            │
+│       ↓             ↓           ↓              ↓                 │
+│  Embeddings    Checkpoints  Metrics        Plots/GIFs            │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-## Model Architectures
+## Model Architecture
 
 ### DiT (Diffusion Transformer)
 
@@ -45,77 +45,12 @@ This document provides a technical overview of the diffusion model architectures
 ```
 
 **Key Features:**
-- Self-attention across all sequence positions
-- Timestep-adaptive normalization (AdaLN)
-- Positional embeddings for sequence order
-- ~18M parameters (default: 512 dim, 8 layers)
+- **Self-attention**: Captures dependencies across all sequence positions simultaneously.
+- **Adaptive LayerNorm (AdaLN)**: Efficiently conditions the model on diffusion timesteps.
+- **Positional embeddings**: Informs the model about the temporal order of events.
+- **Scalability**: Easily adjustable complexity via `model_dim`, `num_layers`, and `num_heads`.
 
-**Best For:** Capturing long-range dependencies and complex patterns
-
-### U-Net (DDPM-style)
-
-**Input:** (batch, seq_len=50, dim=32) → transpose to (batch, 32, 50)
-
-```
-┌─────────────────────────┐
-│  Input Projection       │  32 → base_channels
-└─────────────────────────┘
-           ↓
-┌─────────────────────────┐
-│  Timestep Embedding     │  Sinusoidal → MLP
-└─────────────────────────┘
-           ↓
-╔═════════════════════════╗
-║      ENCODER            ║
-╠═════════════════════════╣
-║  Level 1 (ch × 1)      ║──┐ Skip connection
-║  ├─ ResBlock           ║  │
-║  ├─ Attention?         ║  │
-║  └─ Downsample         ║  │
-╠═════════════════════════╣  │
-║  Level 2 (ch × 2)      ║──┼─┐
-║  ├─ ResBlock           ║  │ │
-║  ├─ Attention?         ║  │ │
-║  └─ Downsample         ║  │ │
-╠═════════════════════════╣  │ │
-║  Level 3 (ch × 4)      ║──┼─┼─┐
-║  └─ ...                ║  │ │ │
-╚═════════════════════════╝  │ │ │
-           ↓                 │ │ │
-┌─────────────────────────┐  │ │ │
-│     BOTTLENECK          │  │ │ │
-│  ├─ ResBlock           │  │ │ │
-│  ├─ Attention          │  │ │ │
-│  └─ ResBlock           │  │ │ │
-└─────────────────────────┘  │ │ │
-           ↓                 │ │ │
-╔═════════════════════════╗  │ │ │
-║      DECODER            ║  │ │ │
-╠═════════════════════════╣  │ │ │
-║  Level 3 (ch × 4)      ║←─┘ │ │
-║  ├─ Upsample           ║    │ │
-║  ├─ Concat skip        ║    │ │
-║  └─ ResBlock           ║    │ │
-╠═════════════════════════╣    │ │
-║  Level 2 (ch × 2)      ║←───┘ │
-║  └─ ...                ║      │
-╠═════════════════════════╣      │
-║  Level 1 (ch × 1)      ║←─────┘
-║  └─ ...                ║
-╚═════════════════════════╝
-           ↓
-┌─────────────────────────┐
-│  Output Projection      │  base_channels → 32
-└─────────────────────────┘
-```
-
-**Key Features:**
-- Multi-scale processing with downsampling/upsampling
-- Skip connections preserve information
-- Efficient 1D convolutions
-- ~8M parameters (default: 128 base channels)
-
-**Best For:** Efficient training and local pattern modeling
+**Best For:** Capturing long-range dependencies and complex patterns in event sequences.
 
 ## Diffusion Process
 
@@ -139,14 +74,14 @@ x_T (noise) → x_{T-1} → ... → x₁ → x₀ (clean)
 pθ(x_{t-1} | xₜ) = 𝒩(x_{t-1}; μθ(xₜ, t), Σθ(xₜ, t))
 ```
 
-**DDPM Sampling:** Full T-step reverse process
-**DDIM Sampling:** Deterministic, faster (e.g., 50 steps)
+**DDPM Sampling:** Full T-step reverse process for maximum quality.
+**DDIM Sampling:** Deterministic, accelerated sampling (e.g., 50 steps) for fast inference.
 
 ### Noise Schedules
 
-1. **Linear:** `β_t = β_start + (β_end - β_start) × t/T`
-2. **Cosine:** `ᾱₜ = cos²((t/T + s)/(1 + s) × π/2)` (recommended)
-3. **Quadratic:** Squared linear interpolation
+1. **Linear:** Standard interpolation between beta values.
+2. **Cosine:** Optimized schedule that preserves more information at low noise levels (recommended).
+3. **Quadratic:** Squared linear interpolation for specific noise profiles.
 
 ## Training Objective
 
@@ -155,65 +90,46 @@ L = 𝔼ₜ,x₀,ε [‖ε - εθ(√ᾱₜ x₀ + √(1-ᾱₜ) ε, t)‖²]
 ```
 
 Where:
-- `ε ~ 𝒩(0, I)` is random noise
-- `εθ` is the denoising model (DiT or U-Net)
-- `t ~ Uniform(1, T)` is random timestep
+- `ε ~ 𝒩(0, I)` is random noise.
+- `εθ` is the denoising DiT model.
+- `t ~ Uniform(1, T)` is a random timestep.
 
 ## Code Organization
 
 ```
 diffusion_transformer/
 ├── data/
-│   ├── dataset.py           # PyTorch Dataset and DataLoader
-│   ├── preprocessing.py     # Event embedding and caching
-│   └── event_autoencoder_model.py  # Autoencoder (if used)
+│   ├── dataset.py           # PyTorch Dataset and DataLoader logic
+│   ├── preprocessing.py     # Event embedding and caching utilities
+│   └── event_autoencoder_model.py  # Latent space encoding
 ├── models/
 │   ├── diffusion.py         # DiffusionProcess (noise schedules, sampling)
-│   ├── dit.py              # DiT architecture
-│   └── unet.py             # U-Net architecture
+│   └── dit.py              # DiT architecture implementation
 ├── training/
-│   └── trainer.py          # Training loop, optimization, checkpointing
+│   └── trainer.py          # Training loop, optimization, and checkpointing
 ├── evaluation/
-│   ├── evaluator.py        # Metrics computation
-│   └── generator.py        # Sample generation
+│   ├── evaluator.py        # Realism and diversity metrics
+│   └── generator.py        # Latent sample generation
 ├── visualization/
-│   └── visualizer.py       # Plotting and animations
+│   └── visualizer.py       # Pitch plots, heatmaps, and animations
 └── utils/
-    └── logger.py           # Centralized logging
+    └── logger.py           # Centralized logging configuration
 ```
 
 ## Evaluation Metrics
 
 ### Statistical Metrics
-- **Frechet Distance:** Distribution similarity between generated and real samples
-- **Mean/Std Difference:** First and second moment matching
+- **Frechet Distance:** Measures the distance between generated and real distributions.
+- **Mean/Std Difference:** Checks if basic statistical moments are preserved.
 
 ### Diversity Metrics
-- **Average Pairwise Distance:** Measures sample diversity
-- **Unique Ratio:** Fraction of unique samples
+- **Average Pairwise Distance:** Quantifies the variety in generated sequences.
+- **Unique Ratio:** Detects mode collapse by checking for identical samples.
 
 ### Coverage
-- **Coverage Score:** Percentage of real samples with close generated counterparts
-
-### Combined Score
-```
-Score = (1 - w) × Realism + w × Diversity
-```
-where `w = diversity_weight`
+- **Coverage Score:** Estimates how well the generated distribution covers the real event space.
 
 ## Hyperparameter Guidelines
-
-### Training
-
-| Hyperparameter | Recommended | Notes |
-|----------------|-------------|-------|
-| Batch Size | 128 | Larger = more stable |
-| Learning Rate | 1e-4 | With warmup |
-| Warmup Epochs | 5 | Stabilizes training |
-| Grad Clip | 1.0 | Prevents explosions |
-| Num Timesteps | 1000 | More = better quality |
-
-### DiT
 
 | Parameter | Small | Medium | Large |
 |-----------|-------|--------|-------|
@@ -222,35 +138,8 @@ where `w = diversity_weight`
 | num_heads | 4 | 8 | 12 |
 | Parameters | ~4M | ~18M | ~45M |
 
-### U-Net
-
-| Parameter | Small | Medium | Large |
-|-----------|-------|--------|-------|
-| model_dim | 64 | 128 | 192 |
-| channel_mult | 1,2,4 | 1,2,4,8 | 1,2,4,8 |
-| num_res_blocks | 1 | 2 | 3 |
-| Parameters | ~2M | ~8M | ~15M |
-
-## Performance Characteristics
-
-### Speed (per epoch on GPU)
-
-| Model | Small | Medium | Large |
-|-------|-------|--------|-------|
-| DiT | ~25s | ~45s | ~90s |
-| U-Net | ~15s | ~35s | ~50s |
-
-### Memory Usage
-
-| Model | Small | Medium | Large |
-|-------|-------|--------|-------|
-| DiT | ~2GB | ~4GB | ~8GB |
-| U-Net | ~1.5GB | ~3GB | ~6GB |
-
 ## References
 
 1. **DiT:** Peebles & Xie. "Scalable Diffusion Models with Transformers." ICCV 2023.
-2. **U-Net:** Ronneberger et al. "U-Net: Convolutional Networks for Biomedical Image Segmentation." MICCAI 2015.
-3. **DDPM:** Ho et al. "Denoising Diffusion Probabilistic Models." NeurIPS 2020.
-4. **DDIM:** Song et al. "Denoising Diffusion Implicit Models." ICLR 2021.
-
+2. **DDPM:** Ho et al. "Denoising Diffusion Probabilistic Models." NeurIPS 2020.
+3. **DDIM:** Song et al. "Denoising Diffusion Implicit Models." ICLR 2021.

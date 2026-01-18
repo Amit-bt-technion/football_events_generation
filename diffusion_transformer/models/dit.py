@@ -243,6 +243,10 @@ def count_parameters(model):
 
 
 if __name__ == "__main__":
+    from diffusion_transformer.utils import setup_logging, get_logger
+    setup_logging()
+    test_logger = get_logger("dit_test")
+
     # Test the model
     model = DiffusionTransformer(
         input_dim=32,
@@ -252,7 +256,7 @@ if __name__ == "__main__":
         max_seq_len=50
     )
 
-    print(f"Model parameters: {count_parameters(model):,}")
+    test_logger.info(f"Model parameters: {count_parameters(model):,}")
 
     # Test forward pass
     batch_size = 4
@@ -261,7 +265,7 @@ if __name__ == "__main__":
     t = torch.randint(0, 1000, (batch_size,))
 
     output = model(x, t)
-    print(f"Input shape: {x.shape}")
-    print(f"Output shape: {output.shape}")
+    test_logger.info(f"Input shape: {x.shape}")
+    test_logger.info(f"Output shape: {output.shape}")
     assert output.shape == x.shape, "Output shape mismatch!"
-    print("Model test passed!")
+    test_logger.info("Model test passed!")

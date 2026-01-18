@@ -10,10 +10,16 @@ from tqdm import tqdm
 
 from diffusion_transformer.models.diffusion import DiffusionProcess
 from diffusion_transformer.visualization.visualizer import Visualizer
+from diffusion_transformer.utils import get_logger
+
+logger = get_logger(__name__)
 
 
 class Generator:
-    """Generator for naive generation task."""
+    """
+    Generator for naive generation task.
+    Handles loading models, sampling from noise, and creating visualizations.
+    """
     
     def __init__(self, args, events_dict: dict[str, np.ndarray], embeddings_dict: dict[str, np.ndarray]):
         """
@@ -30,14 +36,14 @@ class Generator:
         self.embeddings_dict = embeddings_dict
         
         # Load model based on checkpoint or args
-        print("Loading model...")
+        logger.info("Loading model...")
         
         # Try to load checkpoint to get model type
         model_type = args.model_type
         if args.checkpoint and os.path.exists(args.checkpoint):
             checkpoint = torch.load(args.checkpoint, map_location=self.device, weights_only=False)
             model_type = checkpoint.get('model_type', args.model_type)
-            print(f"Detected model type from checkpoint: {model_type}")
+            logger.info(f"Detected model type from checkpoint: {model_type}")
         
         # Create model
         if model_type == "dit":
@@ -76,16 +82,16 @@ class Generator:
         if args.checkpoint:
             checkpoint = torch.load(args.checkpoint, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Loaded checkpoint from {args.checkpoint}")
+            logger.info(f"Loaded checkpoint from {args.checkpoint}")
         else:
             # Try to load best model
             best_model_path = os.path.join(args.models_dir, f"{model_type}_best_model.pt")
             if os.path.exists(best_model_path):
                 checkpoint = torch.load(best_model_path, map_location=self.device, weights_only=False)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
-                print(f"Loaded best model from {best_model_path}")
+                logger.info(f"Loaded best model from {best_model_path}")
             else:
-                print("Warning: No checkpoint found. Using randomly initialized model.")
+                logger.warning("No checkpoint found. Using randomly initialized model.")
         
         self.model.eval()
         
@@ -102,25 +108,26 @@ class Generator:
         self.autoencoder = None
         if os.path.exists(args.autoencoder_path):
             try:
-                print("Loading autoencoder for decoding...")
+                logger.info("Loading autoencoder for decoding...")
                 self.autoencoder = self.load_autoencoder(args.autoencoder_path)
             except Exception as e:
-                print(f"Could not load autoencoder: {e}")
+                logger.error(f"Could not load autoencoder: {e}")
     
     def load_autoencoder(self, model_path):
-        """Load pre-trained autoencoder."""
+        """
+        Load pre-trained autoencoder.
+        
+        Args:
+            model_path: Path to the autoencoder checkpoint
+        """
         # This is a placeholder - adjust based on actual autoencoder structure
         try:
             checkpoint = torch.load(model_path, map_location=self.device)
             # TODO: Initialize autoencoder architecture and load weights
-            # autoencoder = TransformerAutoEncoder(...)
-            # autoencoder.load_state_dict(checkpoint['model_state_dict'])
-            # autoencoder.eval()
-            # return autoencoder
-            print("Warning: Autoencoder loading not implemented yet")
+            logger.warning("Autoencoder loading not implemented yet")
             return None
         except Exception as e:
-            print(f"Error loading autoencoder: {e}")
+            logger.error(f"Error loading autoencoder: {e}")
             return None
     
     @torch.no_grad()
@@ -138,7 +145,7 @@ class Generator:
         """
         shape = (num_samples, self.args.sequence_length, self.args.embedding_dim)
         
-        print(f"Generating {num_samples} samples...")
+        logger.info(f"Generating {num_samples} samples...")
         
         if return_trajectory:
             # Generate with trajectory for visualization
@@ -215,7 +222,7 @@ class Generator:
             Decoded events
         """
         if self.autoencoder is None:
-            print("Warning: No autoencoder available for decoding")
+            logger.warning("No autoencoder available for decoding")
             return None
 
         decoded = self.autoencoder.decode(torch.tensor(samples).to(self.device))
@@ -224,8 +231,10 @@ class Generator:
     
     def generate_and_visualize(self):
         """Generate samples and create visualizations."""
-        print("\n=== Naive Generation Task ===")
-        print(f"Generating {self.args.num_gen_samples} samples from random noise...\n")
+        logger.info("="*60)
+        logger.info("NAIVE GENERATION TASK")
+        logger.info("="*60)
+        logger.info(f"Generating {self.args.num_gen_samples} samples from random noise...")
         
         # Generate samples
         use_ddim = self.args.ddim_steps < self.args.num_timesteps
@@ -261,14 +270,14 @@ class Generator:
                 'args': vars(self.args)
             }, f)
         
-        print(f"\nGenerated samples saved to {output_path}")
-        print(f"Sample shape: {all_samples.shape}")
+        logger.info(f"Generated samples saved to {output_path}")
+        logger.info(f"Sample shape: {all_samples.shape}")
 
         # Decode samples if autoencoder is available
         decoded = self.decode_samples(all_samples[:num_traj_samples])
         
         # Create visualizations
-        print("\nCreating visualizations...")
+        logger.info("Creating visualizations...")
         visualizer = Visualizer(self.args, self.events_dict, self.embeddings_dict)
         
         # Visualize trajectory
@@ -281,6 +290,6 @@ class Generator:
         if len(all_samples) >= 50:
             visualizer.visualize_embedding_space(all_samples)
         
-        print(f"\nVisualization completed! Check {self.args.output_dir} for results.")
+        logger.info("Visualization completed! Check output directory for results.")
         
         return all_samples, trajectory

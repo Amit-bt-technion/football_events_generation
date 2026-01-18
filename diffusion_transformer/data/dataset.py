@@ -13,7 +13,9 @@ from torch import Tensor
 from torch.utils.data import Dataset, DataLoader
 import random
 from tqdm import tqdm
+from diffusion_transformer.utils import get_logger
 
+logger = get_logger(__name__)
 
 # Task registry to store sampling and labeling functions
 TASK_REGISTRY = {}
@@ -50,13 +52,13 @@ class EventSequenceDataset(Dataset):
         """
         Initialize the EventSequenceDataset.
 
-        :param args: Arguments passed to the training script
-        :param events_dict: Dictionary of event DataFrames keyed by match_id
-        :param embeddings_dict: dictionary of precomputed embeddings keyed by match_id
-        :param match_ids: Optional list of match IDs to filter by
-        :param shuffle: Whether to shuffle the samples
+        Args:
+            args: Arguments passed to the training script
+            events_dict: Dictionary of event DataFrames keyed by match_id
+            embeddings_dict: dictionary of precomputed embeddings keyed by match_id
+            match_ids: Optional list of match IDs to filter by
+            shuffle: Whether to shuffle the samples
         """
-        self.logger = logging.getLogger(__name__)
         self.events_dict = events_dict
         self.sequence_length = args.sequence_length
         self.min_gap = args.min_gap
@@ -69,7 +71,7 @@ class EventSequenceDataset(Dataset):
 
         # Get unique match IDs
         self.match_ids = match_ids
-        self.logger.info(f"Processing {len(self.match_ids)} unique matches for task '{args.task}'")
+        logger.info(f"Processing {len(self.match_ids)} unique matches for task '{args.task}'")
 
         # Group events by match_id
         self.num_match_events = {}
@@ -96,7 +98,7 @@ class EventSequenceDataset(Dataset):
         if shuffle:
             random.shuffle(self.samples)
 
-        self.logger.info(f"Created dataset with {len(self.samples)} samples for task '{args.task}'")
+        logger.info(f"Created dataset with {len(self.samples)} samples for task '{args.task}'")
 
     def _generate_samples(
             self,
@@ -106,6 +108,11 @@ class EventSequenceDataset(Dataset):
     ) -> list[tuple]:
         """
         Generate samples using the task-specific sampling function.
+
+        Args:
+            max_samples_per_match: Maximum samples to take from each match
+            max_total_samples: Maximum total samples for the entire dataset
+            verbose: Whether to show progress bar
 
         Returns:
             list of samples as defined by the task-specific function
@@ -121,10 +128,8 @@ class EventSequenceDataset(Dataset):
 
             # Skip matches that don't have enough events for the minimum sequence length
             if num_events < self.sequence_length:
-                self.logger.debug(f"Skipping match {match_id}: not enough events")
+                logger.debug(f"Skipping match {match_id}: not enough events")
                 continue
-
-
 
             # Call the task-specific sampling function
             match_samples = sampling_func(
@@ -141,7 +146,7 @@ class EventSequenceDataset(Dataset):
             total_samples += len(match_samples)
 
             if max_total_samples is not None and total_samples >= max_total_samples:
-                self.logger.info(f"Reached maximum total samples ({max_total_samples})")
+                logger.info(f"Reached maximum total samples ({max_total_samples})")
                 samples = samples[:max_total_samples]
                 break
 
@@ -386,29 +391,14 @@ def create_dataloaders(args, events_dict: dict, embeddings_dict: dict) -> tuple[
     """
     Create train, validation, and test data loaders.
 
-    :param args: The arguments for the pipeline.
-    :param events_dict: Dictionary containing event data.
-    :param embeddings_dict: Dictionary containing event embeddings.
-
-    Args should contain:
-        task: Name of the task to determine sampling strategy
-        sequence_length: Number of events in each sequence
-        min_gap: Minimum number of events between sequences
-        max_gap: Maximum number of events between sequences
-        train_split: Proportion of matches to use for training
-        val_split: Proportion of matches to use for validation
-        batch_size: Batch size for data loaders
-        max_samples_per_match: Maximum samples to generate per match
-        max_samples_total: Maximum total samples
-        num_workers: Number of workers for data loading
-        task_params: Additional parameters specific to the task
-        verbose: Whether to show progress bars
+    Args:
+        args: Pipeline arguments (task, sequence_length, splits, batch_size, etc.)
+        events_dict: Dictionary containing event data
+        embeddings_dict: Dictionary containing event embeddings
 
     Returns:
         tuple of (train_loader, val_loader, test_loader)
     """
-    logger = logging.getLogger(__name__)
-
     # Merge task parameters with events_df for tasks that need it
     if args.task_params is None:
         args.task_params = {}

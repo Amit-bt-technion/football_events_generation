@@ -13,12 +13,16 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score
 import pickle
 from pathlib import Path
+from diffusion_transformer.utils import get_logger
+
+logger = get_logger(__name__)
+
 try:
     import umap
     UMAP_AVAILABLE = True
 except ImportError:
     UMAP_AVAILABLE = False
-    print("Warning: UMAP not available. Install with: pip install umap-learn")
+    logger.warning("UMAP not available. Install with: pip install umap-learn")
 
 
 class Visualizer:
@@ -51,10 +55,10 @@ class Visualizer:
             trajectory: List of dicts with 'timestep' and 'samples'
         """
         if not trajectory:
-            print("No trajectory data to visualize")
+            logger.warning("No trajectory data to visualize")
             return
         
-        print("Visualizing diffusion trajectory...")
+        logger.info("Visualizing diffusion trajectory...")
         
         # Create figure with multiple subplots
         n_steps = len(trajectory)
@@ -83,14 +87,19 @@ class Visualizer:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Trajectory visualization saved to {output_path}")
+        logger.info(f"Trajectory visualization saved to {output_path}")
         
         # Create animated trajectory
         self.create_trajectory_animation(trajectory)
     
     def create_trajectory_animation(self, trajectory):
-        """Create animated visualization of diffusion trajectory."""
-        print("Creating trajectory animation...")
+        """
+        Create animated visualization of diffusion trajectory.
+        
+        Args:
+            trajectory: List of dicts with 'timestep' and 'samples'
+        """
+        logger.info("Creating trajectory animation...")
         
         fig, ax = plt.subplots(figsize=(8, 6))
         
@@ -117,7 +126,7 @@ class Visualizer:
         anim.save(output_path, writer=writer)
         plt.close()
         
-        print(f"Animation saved to {output_path}")
+        logger.info(f"Animation saved to {output_path}")
     
     def visualize_generated_samples(self, samples):
         """
@@ -126,7 +135,7 @@ class Visualizer:
         Args:
             samples: Generated samples (N, seq_len, embedding_dim)
         """
-        print("Visualizing generated samples...")
+        logger.info("Visualizing generated samples...")
         
         n_samples = min(10, len(samples))
         fig, axes = plt.subplots(2, 5, figsize=(20, 8))
@@ -147,7 +156,7 @@ class Visualizer:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Sample grid saved to {output_path}")
+        logger.info(f"Sample grid saved to {output_path}")
     
     def visualize_embedding_space(self, samples, real_samples=None, real_event_types=None):
         """
@@ -168,11 +177,11 @@ class Visualizer:
             real_samples: Optional real samples for comparison (not used if events_dict is available)
             real_event_types: Optional event types for real samples (auto-extracted if not provided)
         """
-        print("Visualizing embedding space with event type clustering...")
+        logger.info("Visualizing embedding space with event type clustering...")
         
         # If we have events_dict and embeddings_dict, extract event types from real data
         if self.events_dict is not None and self.embeddings_dict is not None and real_event_types is None:
-            print("Extracting event types from real events...")
+            logger.info("Extracting event types from real events...")
             real_event_types = []
             real_embeddings_list = []
             
@@ -194,22 +203,19 @@ class Visualizer:
                 real_event_types = np.array(real_event_types[:max_samples])
                 real_embeddings = real_embeddings[:max_samples]
                 
-                # Reconstruct real_samples from embeddings for comparison
-                # Shape: (num_events, embedding_dim) -> we'll treat each event as a sequence of length 1
-                # Or we can just use the embeddings directly
-                print(f"Using {len(real_event_types)} real events for comparison")
+                logger.info(f"Using {len(real_event_types)} real events for comparison")
         
         # Determine if we have event type information
         has_event_types = (real_event_types is not None and len(real_event_types) > 0)
         
         if not has_event_types:
-            print("Warning: No event type information available. Using basic visualization.")
+            logger.warning("No event type information available. Using basic visualization.")
             # Fall back to simple visualization
             return self._visualize_embedding_space_simple(samples, real_samples)
         
         # Prepare data for dimensionality reduction
         # For generated samples, we'll use individual events from sequences
-        print("Preparing generated samples...")
+        logger.info("Preparing generated samples...")
         # Flatten to individual events: (N, seq_len, emb_dim) -> (N*seq_len, emb_dim)
         gen_events = samples.reshape(-1, samples.shape[-1])
         
@@ -223,7 +229,7 @@ class Visualizer:
         # or try to decode them if we have an autoencoder
         
         # Combine real and generated for joint embedding
-        print("Combining real and generated embeddings...")
+        logger.info("Combining real and generated embeddings...")
         all_embeddings = np.vstack([real_embeddings, gen_events])
         
         # Create labels: real event types and a special label for generated
@@ -233,7 +239,7 @@ class Visualizer:
         ])
         
         # Apply PCA for initial dimensionality reduction (if needed)
-        print("Applying PCA for dimensionality reduction...")
+        logger.info("Applying PCA for dimensionality reduction...")
         if all_embeddings.shape[1] > 50:
             pca = PCA(n_components=50)
             all_embeddings_reduced = pca.fit_transform(all_embeddings)
@@ -241,7 +247,7 @@ class Visualizer:
             all_embeddings_reduced = all_embeddings
         
         # Apply t-SNE
-        print("Computing t-SNE (this may take a while)...")
+        logger.info("Computing t-SNE (this may take a while)...")
         tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(all_embeddings) // 4))
         tsne_result = tsne.fit_transform(all_embeddings_reduced)
         
@@ -252,29 +258,29 @@ class Visualizer:
         # Apply UMAP if available
         umap_result = None
         if UMAP_AVAILABLE:
-            print("Computing UMAP...")
+            logger.info("Computing UMAP...")
             try:
                 umap_reducer = umap.UMAP(n_components=2, random_state=42, n_neighbors=min(15, len(all_embeddings) // 10))
                 umap_result = umap_reducer.fit_transform(all_embeddings_reduced)
                 real_umap = umap_result[:len(real_event_types)]
                 gen_umap = umap_result[len(real_event_types):]
             except Exception as e:
-                print(f"UMAP failed: {e}")
+                logger.error(f"UMAP failed: {e}")
                 umap_result = None
         
         # Calculate silhouette scores for real events only
         try:
             silhouette_tsne = silhouette_score(real_tsne, real_event_types)
-            print(f"Silhouette score (t-SNE, real events): {silhouette_tsne:.3f}")
-        except:
+            logger.info(f"Silhouette score (t-SNE, real events): {silhouette_tsne:.3f}")
+        except Exception:
             silhouette_tsne = None
         
         silhouette_umap = None
         if umap_result is not None:
             try:
                 silhouette_umap = silhouette_score(real_umap, real_event_types)
-                print(f"Silhouette score (UMAP, real events): {silhouette_umap:.3f}")
-            except:
+                logger.info(f"Silhouette score (UMAP, real events): {silhouette_umap:.3f}")
+            except Exception:
                 silhouette_umap = None
         
         # Create visualization
@@ -374,9 +380,9 @@ class Visualizer:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Embedding space visualization saved to {output_path}")
-        print(f"Real events: {len(real_event_types)}, Generated events: {len(gen_events)}")
-        print(f"Number of unique event types: {n_event_types}")
+        logger.info(f"Embedding space visualization saved to {output_path}")
+        logger.info(f"Real events: {len(real_event_types)}, Generated events: {len(gen_events)}")
+        logger.info(f"Number of unique event types: {n_event_types}")
     
     def _visualize_embedding_space_simple(self, samples, real_samples=None):
         """
@@ -386,7 +392,7 @@ class Visualizer:
             samples: Generated samples
             real_samples: Optional real samples for comparison
         """
-        print("Using simple embedding space visualization (no event type info)...")
+        logger.info("Using simple embedding space visualization (no event type info)...")
         
         # Flatten sequences
         samples_flat = samples.reshape(samples.shape[0], -1)
@@ -396,7 +402,7 @@ class Visualizer:
         samples_pca = pca.fit_transform(samples_flat)
         
         # Apply t-SNE
-        print("Computing t-SNE...")
+        logger.info("Computing t-SNE...")
         tsne = TSNE(n_components=2, random_state=42, perplexity=30)
         
         if real_samples is not None:
@@ -458,7 +464,7 @@ class Visualizer:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Embedding space visualization saved to {output_path}")
+        logger.info(f"Embedding space visualization saved to {output_path}")
     
     def visualize_on_pitch(self, events, output_name='pitch_visualization.png'):
         """
@@ -468,7 +474,7 @@ class Visualizer:
             events: List of events with coordinates (x, y)
             output_name: Output filename
         """
-        print("Visualizing events on pitch...")
+        logger.info("Visualizing events on pitch...")
         
         fig, ax = plt.subplots(figsize=(12, 8))
         
@@ -496,7 +502,7 @@ class Visualizer:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Pitch visualization saved to {output_path}")
+        logger.info(f"Pitch visualization saved to {output_path}")
     
     def draw_pitch(self, ax, pitch_length=105, pitch_width=68):
         """Draw a football pitch on the given axes."""
@@ -558,7 +564,7 @@ class Visualizer:
         """
         import json
         
-        print("Visualizing metrics...")
+        logger.info("Visualizing metrics...")
         
         with open(metrics_path, 'r') as f:
             metrics = json.load(f)
@@ -607,11 +613,13 @@ class Visualizer:
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
-        print(f"Metrics visualization saved to {output_path}")
+        logger.info(f"Metrics visualization saved to {output_path}")
     
     def visualize_all(self):
         """Create all visualizations from saved data."""
-        print("\n=== Creating All Visualizations ===\n")
+        logger.info("="*60)
+        logger.info("CREATING ALL VISUALIZATIONS")
+        logger.info("="*60)
         
         # Load generated samples
         samples_path = os.path.join(self.output_dir, 'generated_samples.pkl')
@@ -646,4 +654,6 @@ class Visualizer:
                 if 'final' in cached:
                     self.visualize_generated_samples(cached['final'][:10])
         
-        print("\n=== All Visualizations Complete ===")
+        logger.info("="*60)
+        logger.info("ALL VISUALIZATIONS COMPLETE")
+        logger.info("="*60)
