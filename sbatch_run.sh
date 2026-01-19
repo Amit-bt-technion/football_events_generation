@@ -16,9 +16,13 @@ cd /home/amit-ben/football_events_generation
 # Common setup steps (runs for all valid cases)
 # Only run this if you want these steps to happen every time regardless of the command
 rm -rf .venv
-uv venv
+rm -rf uv.lock
+uv venv --python 3.12
 source .venv/bin/activate
+uv sync --resolution highest
+uv pip install --upgrade numba
 uv pip install -e .
+uv pip install tqdm
 uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # Switch-case on the first parameter

@@ -11,7 +11,7 @@ from tqdm import tqdm
 from diffusion_transformer.models.diffusion import DiffusionProcess
 from diffusion_transformer.visualization.visualizer import Visualizer
 from diffusion_transformer.utils import get_logger
-from utils.event_autoencoder import EventAutoencoder
+from diffusion_transformer.data.event_autoencoder_model import EventAutoencoder
 
 logger = get_logger(__name__)
 
@@ -228,7 +228,7 @@ class Generator:
             return None
 
         decoded = self.autoencoder.decoder(torch.tensor(samples).to(self.device))
-        return decoded.detach().numpy()
+        return decoded.detach().cpu().numpy()
 
     
     def generate_and_visualize(self):
