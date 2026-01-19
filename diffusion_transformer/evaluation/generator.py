@@ -11,6 +11,7 @@ from tqdm import tqdm
 from diffusion_transformer.models.diffusion import DiffusionProcess
 from diffusion_transformer.visualization.visualizer import Visualizer
 from diffusion_transformer.utils import get_logger
+from utils.event_autoencoder import EventAutoencoder
 
 logger = get_logger(__name__)
 
@@ -122,10 +123,11 @@ class Generator:
         """
         # This is a placeholder - adjust based on actual autoencoder structure
         try:
-            checkpoint = torch.load(model_path, map_location=self.device)
-            # TODO: Initialize autoencoder architecture and load weights
-            logger.warning("Autoencoder loading not implemented yet")
-            return None
+            model = EventAutoencoder()
+            model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=False))
+            model = model.to(self.device)
+            model.eval()
+            return model
         except Exception as e:
             logger.error(f"Error loading autoencoder: {e}")
             return None
@@ -225,8 +227,8 @@ class Generator:
             logger.warning("No autoencoder available for decoding")
             return None
 
-        decoded = self.autoencoder.decode(torch.tensor(samples).to(self.device))
-        return decoded.cpu().numpy()
+        decoded = self.autoencoder.decoder(torch.tensor(samples).to(self.device))
+        return decoded.detach().numpy()
 
     
     def generate_and_visualize(self):
@@ -275,6 +277,10 @@ class Generator:
 
         # Decode samples if autoencoder is available
         decoded = self.decode_samples(all_samples[:num_traj_samples])
+
+        # Save decoded samples as CSVs
+        if decoded is not None:
+            self.save_decoded_samples_csv(decoded, all_samples)
         
         # Create visualizations
         logger.info("Creating visualizations...")
@@ -293,3 +299,70 @@ class Generator:
         logger.info("Visualization completed! Check output directory for results.")
         
         return all_samples, trajectory
+
+
+    def save_decoded_samples_csv(self, decoded_samples, latent_samples):
+        """
+        Save decoded samples as CSV files in a logical structure.
+
+        Args:
+            decoded_samples: Decoded event sequences (N, seq_len, event_features)
+            latent_samples: Original latent embeddings (N, seq_len, embedding_dim)
+        """
+        import pandas as pd
+
+        logger.info("Saving decoded samples as CSVs...")
+
+        # Create output directory for decoded samples
+        decoded_dir = os.path.join(self.args.output_dir, 'decoded_sequences')
+        os.makedirs(decoded_dir, exist_ok=True)
+
+        num_sequences, seq_len, num_features = decoded_samples.shape
+
+        # Save each sequence as a separate CSV
+        for seq_idx in range(num_sequences):
+            sequence = decoded_samples[seq_idx]  # Shape: (seq_len, num_features)
+            latent = latent_samples[seq_idx]  # Shape: (seq_len, embedding_dim)
+
+            # Create DataFrame with event features
+            df = pd.DataFrame(sequence, columns=[f'feature_{i}' for i in range(num_features)])
+            df.insert(0, 'event_index', range(seq_len))
+
+            # Save individual sequence
+            sequence_path = os.path.join(decoded_dir, f'sequence_{seq_idx:04d}.csv')
+            df.to_csv(sequence_path, index=False)
+
+        logger.info(f"Saved {num_sequences} decoded sequences to {decoded_dir}")
+
+        # Also save a summary file with all sequences combined
+        summary_data = []
+        for seq_idx in range(num_sequences):
+            sequence = decoded_samples[seq_idx]
+            for event_idx in range(seq_len):
+                row = {
+                    'sequence_id': seq_idx,
+                    'event_index': event_idx,
+                }
+                # Add features
+                for feat_idx in range(num_features):
+                    row[f'feature_{feat_idx}'] = sequence[event_idx, feat_idx]
+                summary_data.append(row)
+
+        summary_df = pd.DataFrame(summary_data)
+        summary_path = os.path.join(self.args.output_dir, 'decoded_sequences_summary.csv')
+        summary_df.to_csv(summary_path, index=False)
+        logger.info(f"Saved combined summary to {summary_path}")
+
+        # Save statistics about the decoded sequences
+        stats = {
+            'num_sequences': num_sequences,
+            'sequence_length': seq_len,
+            'num_features': num_features,
+            'mean_per_feature': sequence.mean(axis=0).tolist(),
+            'std_per_feature': sequence.std(axis=0).tolist(),
+        }
+
+        stats_df = pd.DataFrame([stats])
+        stats_path = os.path.join(self.args.output_dir, 'decoded_statistics.csv')
+        stats_df.to_csv(stats_path, index=False)
+        logger.info(f"Saved statistics to {stats_path}")
