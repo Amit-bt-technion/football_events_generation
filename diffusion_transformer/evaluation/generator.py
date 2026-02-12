@@ -11,7 +11,7 @@ from tqdm import tqdm
 from diffusion_transformer.models.diffusion import DiffusionProcess
 from diffusion_transformer.visualization.visualizer import Visualizer
 from diffusion_transformer.utils import get_logger
-from utils.event_autoencoder import EventAutoencoder
+from diffusion_transformer.data.event_autoencoder_model import EventAutoencoder
 
 logger = get_logger(__name__)
 
@@ -81,7 +81,7 @@ class Generator:
         
         # Load checkpoint
         if args.checkpoint:
-            checkpoint = torch.load(args.checkpoint, map_location=self.device)
+            checkpoint = torch.load(args.checkpoint, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             logger.info(f"Loaded checkpoint from {args.checkpoint}")
         else:
@@ -228,7 +228,7 @@ class Generator:
             return None
 
         decoded = self.autoencoder.decoder(torch.tensor(samples).to(self.device))
-        return decoded.detach().numpy()
+        return decoded.detach().cpu().numpy()
 
     
     def generate_and_visualize(self):
@@ -260,23 +260,30 @@ class Generator:
         else:
             all_samples = samples_with_traj
         
-        # Save samples
+        # Decode ALL samples if autoencoder is available
+        decoded = self.decode_samples(all_samples)
+        
+        # Save samples (including decoded samples for extract_event_sequences.py)
         output_path = os.path.join(self.args.output_dir, f"{self.model_type}_generated_samples.pkl")
         os.makedirs(self.args.output_dir, exist_ok=True)
         
+        save_data = {
+            'samples': all_samples,
+            'trajectory': trajectory,
+            'model_type': self.model_type,
+            'args': vars(self.args)
+        }
+        
+        # Add decoded samples if available (for extract_event_sequences.py)
+        if decoded is not None:
+            save_data['decoded_generated'] = decoded
+            logger.info(f"Decoded samples shape: {decoded.shape}")
+        
         with open(output_path, 'wb') as f:
-            pickle.dump({
-                'samples': all_samples,
-                'trajectory': trajectory,
-                'model_type': self.model_type,
-                'args': vars(self.args)
-            }, f)
+            pickle.dump(save_data, f)
         
         logger.info(f"Generated samples saved to {output_path}")
         logger.info(f"Sample shape: {all_samples.shape}")
-
-        # Decode samples if autoencoder is available
-        decoded = self.decode_samples(all_samples[:num_traj_samples])
 
         # Save decoded samples as CSVs
         if decoded is not None:
