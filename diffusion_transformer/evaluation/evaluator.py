@@ -1,5 +1,6 @@
 """
 Evaluation module with realism and diversity metrics.
+Includes comprehensive vector validation for decoded event vectors.
 """
 
 import os
@@ -9,13 +10,158 @@ from scipy import linalg
 from sklearn.metrics import pairwise_distances
 import pickle
 import json
+from collections import defaultdict
 
 from torch.utils.data import DataLoader
 
 from diffusion_transformer.models.diffusion import DiffusionProcess
+from diffusion_transformer.data.event_autoencoder_model import EventAutoencoder
 from diffusion_transformer.utils import get_logger
 
 logger = get_logger(__name__)
+
+
+# ============================================================================
+# Event Vector Structure Definition (128 dimensions)
+# Based on tokenizer configuration
+# ============================================================================
+
+# Feature indices and their types
+FEATURE_DEFINITIONS = {
+    # Common features (0-14)
+    0: {'name': 'type.id', 'type': 'categorical', 'num_categories': 29},
+    1: {'name': 'play_pattern.id', 'type': 'categorical', 'num_categories': 9},
+    2: {'name': 'location_x', 'type': 'range', 'min': 0, 'max': 120},
+    3: {'name': 'location_y', 'type': 'range', 'min': 0, 'max': 80},
+    4: {'name': 'duration', 'type': 'range', 'min': 0, 'max': 3},
+    5: {'name': 'under_pressure', 'type': 'binary'},
+    6: {'name': 'out', 'type': 'binary'},
+    7: {'name': 'counterpress', 'type': 'binary'},
+    8: {'name': 'period', 'type': 'categorical', 'num_categories': 5},
+    9: {'name': 'second', 'type': 'categorical', 'num_categories': 60},
+    10: {'name': 'position.id', 'type': 'categorical', 'num_categories': 25},
+    11: {'name': 'minute', 'type': 'range', 'min': 0, 'max': 60},
+    12: {'name': 'team.id', 'type': 'binary'},
+    13: {'name': 'possession_team.id', 'type': 'binary'},
+    14: {'name': 'player_position', 'type': 'range', 'min': 0, 'max': 1},
+    
+    # Event-specific features (15-70) - sparse for most events
+    # Ball recovery (15-16)
+    15: {'name': 'ball_recovery.offensive', 'type': 'binary', 'sparse': True},
+    16: {'name': 'ball_recovery.recovery_failure', 'type': 'binary', 'sparse': True},
+    
+    # Duel (17-18)
+    17: {'name': 'duel.type.id', 'type': 'categorical', 'num_categories': 2, 'sparse': True},
+    18: {'name': 'duel.outcome.id', 'type': 'categorical', 'num_categories': 7, 'sparse': True},
+    
+    # Block (19-21)
+    19: {'name': 'block.deflection', 'type': 'binary', 'sparse': True},
+    20: {'name': 'block.offensive', 'type': 'binary', 'sparse': True},
+    21: {'name': 'block.save_block', 'type': 'binary', 'sparse': True},
+    
+    # Clearance (22-23)
+    22: {'name': 'clearance.aerial_won', 'type': 'binary', 'sparse': True},
+    23: {'name': 'clearance.body_part.id', 'type': 'categorical', 'num_categories': 4, 'sparse': True},
+    
+    # Interception (24)
+    24: {'name': 'interception.outcome.id', 'type': 'categorical', 'num_categories': 7, 'sparse': True},
+    
+    # Dribble (25-28)
+    25: {'name': 'dribble.overrun', 'type': 'binary', 'sparse': True},
+    26: {'name': 'dribble.nutmeg', 'type': 'binary', 'sparse': True},
+    27: {'name': 'dribble.outcome.id', 'type': 'categorical', 'num_categories': 2, 'sparse': True},
+    28: {'name': 'dribble.no_touch', 'type': 'binary', 'sparse': True},
+    
+    # Substitution (29)
+    29: {'name': 'substitution.outcome.id', 'type': 'categorical', 'num_categories': 2, 'sparse': True},
+    
+    # Foul won (30-32)
+    30: {'name': 'foul_won.defensive', 'type': 'binary', 'sparse': True},
+    31: {'name': 'foul_won.advantage', 'type': 'binary', 'sparse': True},
+    32: {'name': 'foul_won.penalty', 'type': 'binary', 'sparse': True},
+    
+    # Foul committed (33-37)
+    33: {'name': 'foul_committed.type.id', 'type': 'categorical', 'num_categories': 6, 'sparse': True},
+    34: {'name': 'foul_committed.offensive', 'type': 'binary', 'sparse': True},
+    35: {'name': 'foul_committed.advantage', 'type': 'binary', 'sparse': True},
+    36: {'name': 'foul_committed.penalty', 'type': 'binary', 'sparse': True},
+    37: {'name': 'foul_committed.card.id', 'type': 'categorical', 'num_categories': 3, 'sparse': True},
+    
+    # Goalkeeper (38-44)
+    38: {'name': 'goalkeeper.type.id', 'type': 'categorical', 'num_categories': 14, 'sparse': True},
+    39: {'name': 'goalkeeper.outcome.id', 'type': 'categorical', 'num_categories': 19, 'sparse': True},
+    40: {'name': 'goalkeeper.position.id', 'type': 'categorical', 'num_categories': 3, 'sparse': True},
+    41: {'name': 'goalkeeper.technique.id', 'type': 'categorical', 'num_categories': 2, 'sparse': True},
+    42: {'name': 'goalkeeper.body_part.id', 'type': 'categorical', 'num_categories': 7, 'sparse': True},
+    43: {'name': 'goalkeeper.end_location_x', 'type': 'range', 'min': 0, 'max': 120, 'sparse': True},
+    44: {'name': 'goalkeeper.end_location_y', 'type': 'range', 'min': 0, 'max': 80, 'sparse': True},
+    
+    # Bad behavior (45)
+    45: {'name': 'bad_behavior.card.id', 'type': 'categorical', 'num_categories': 3, 'sparse': True},
+    
+    # Player off (46)
+    46: {'name': 'player_off.permanent', 'type': 'binary', 'sparse': True},
+    
+    # Pass (47-64)
+    47: {'name': 'pass.type.id', 'type': 'categorical', 'num_categories': 7, 'sparse': True},
+    48: {'name': 'pass.length', 'type': 'range', 'min': 0, 'max': 120, 'sparse': True},
+    49: {'name': 'pass.angle', 'type': 'range', 'min': -3.15, 'max': 3.15, 'sparse': True},
+    50: {'name': 'pass.height.id', 'type': 'categorical', 'num_categories': 3, 'sparse': True},
+    51: {'name': 'pass.end_location_x', 'type': 'range', 'min': 0, 'max': 120, 'sparse': True},
+    52: {'name': 'pass.end_location_y', 'type': 'range', 'min': 0, 'max': 80, 'sparse': True},
+    53: {'name': 'pass.backheel', 'type': 'binary', 'sparse': True},
+    54: {'name': 'pass.deflected', 'type': 'binary', 'sparse': True},
+    55: {'name': 'pass.miscommunication', 'type': 'binary', 'sparse': True},
+    56: {'name': 'pass.cross', 'type': 'binary', 'sparse': True},
+    57: {'name': 'pass.cut_back', 'type': 'binary', 'sparse': True},
+    58: {'name': 'pass.switch', 'type': 'binary', 'sparse': True},
+    59: {'name': 'pass.shot_assist', 'type': 'binary', 'sparse': True},
+    60: {'name': 'pass.goal_assist', 'type': 'binary', 'sparse': True},
+    61: {'name': 'pass.body_part.id', 'type': 'categorical', 'num_categories': 7, 'sparse': True},
+    62: {'name': 'pass.outcome.id', 'type': 'categorical', 'num_categories': 5, 'sparse': True},
+    63: {'name': 'pass.technique.id', 'type': 'categorical', 'num_categories': 4, 'sparse': True},
+    64: {'name': 'pass.recipient_position', 'type': 'range', 'min': 0, 'max': 1, 'sparse': True},
+    
+    # 50-50 (65)
+    65: {'name': '50_50.outcome.id', 'type': 'categorical', 'num_categories': 4, 'sparse': True},
+    
+    # Miscontrol (66)
+    66: {'name': 'miscontrol.aerial_won', 'type': 'binary', 'sparse': True},
+    
+    # Injury stoppage (67)
+    67: {'name': 'injury_stoppage.in_chain', 'type': 'binary', 'sparse': True},
+    
+    # Ball receipt (68)
+    68: {'name': 'ball_receipt.outcome.id', 'type': 'categorical', 'num_categories': 1, 'sparse': True},
+    
+    # Carry (69-70)
+    69: {'name': 'carry.end_location_x', 'type': 'range', 'min': 0, 'max': 120, 'sparse': True},
+    70: {'name': 'carry.end_location_y', 'type': 'range', 'min': 0, 'max': 80, 'sparse': True},
+    
+    # Shot features (71-83)
+    71: {'name': 'shot.type.id', 'type': 'categorical', 'num_categories': 4, 'sparse': True},
+    72: {'name': 'shot.end_location_x', 'type': 'range', 'min': 0, 'max': 120, 'sparse': True},
+    73: {'name': 'shot.end_location_y', 'type': 'range', 'min': 0, 'max': 80, 'sparse': True},
+    74: {'name': 'shot.end_location_z', 'type': 'range', 'min': 0, 'max': 5, 'sparse': True},
+    75: {'name': 'shot.aerial_won', 'type': 'binary', 'sparse': True},
+    76: {'name': 'shot.follows_dribble', 'type': 'binary', 'sparse': True},
+    77: {'name': 'shot.first_time', 'type': 'binary', 'sparse': True},
+    78: {'name': 'shot.open_goal', 'type': 'binary', 'sparse': True},
+    79: {'name': 'shot.statsbomb_xg', 'type': 'range', 'min': 0, 'max': 1, 'sparse': True},
+    80: {'name': 'shot.deflected', 'type': 'binary', 'sparse': True},
+    81: {'name': 'shot.technique.id', 'type': 'categorical', 'num_categories': 7, 'sparse': True},
+    82: {'name': 'shot.body_part.id', 'type': 'categorical', 'num_categories': 4, 'sparse': True},
+    83: {'name': 'shot.outcome.id', 'type': 'categorical', 'num_categories': 8, 'sparse': True},
+    
+    # Freeze frame features (84-127) - 22 players × 2 values (x, y locations)
+    **{i: {'name': f'freeze_frame.player_{(i-84)//2}.{"x" if (i-84)%2==0 else "y"}', 
+           'type': 'range', 'min': 0, 'max': 120 if (i-84)%2==0 else 80, 'sparse': True} 
+       for i in range(84, 128)}
+}
+
+# Event type ID to normalized value mapping (for validation)
+# Shot event type.id = 16, which is at position 9 in the sorted list of 29 event types
+SHOT_EVENT_TYPE_NORMALIZED = 9 / 29  # ≈ 0.3103
 
 
 class Evaluator:
@@ -107,6 +253,32 @@ class Evaluator:
         if args.use_xg_metrics and os.path.exists(args.xg_model_path):
             logger.info("Loading xG model...")
             self.xg_model = self.load_xg_model(args.xg_model_path)
+        
+        # Load autoencoder for decoding (vector validation)
+        self.autoencoder = None
+        if os.path.exists(args.autoencoder_path):
+            try:
+                logger.info("Loading autoencoder for vector validation...")
+                self.autoencoder = self._load_autoencoder(args.autoencoder_path)
+            except Exception as e:
+                logger.warning(f"Could not load autoencoder for validation: {e}")
+    
+    def _load_autoencoder(self, model_path):
+        """Load the autoencoder for decoding embeddings."""
+        # Determine input_dim from the model file
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        
+        # Try to infer input_dim from the checkpoint
+        if isinstance(checkpoint, dict) and 'encoder.0.weight' in checkpoint:
+            input_dim = checkpoint['encoder.0.weight'].shape[1]
+        else:
+            input_dim = 128  # Default assumption
+        
+        model = EventAutoencoder(input_dim=input_dim, latent_dim=self.args.embedding_dim)
+        model.load_state_dict(checkpoint)
+        model = model.to(self.device)
+        model.eval()
+        return model
     
     def load_xg_model(self, model_path):
         """Load pre-trained xG model."""
@@ -320,6 +492,498 @@ class Evaluator:
         coverage = np.mean(min_distances < threshold)
         
         return coverage
+
+    # ========================================================================
+    # Vector Validation Methods (for decoded 128-dim event vectors)
+    # ========================================================================
+    
+    @torch.no_grad()
+    def decode_embeddings(self, embeddings):
+        """
+        Decode latent embeddings to full event vectors using the autoencoder.
+        
+        Args:
+            embeddings: Latent embeddings (N, seq_len, 32)
+            
+        Returns:
+            Decoded vectors (N, seq_len, 128) or None if autoencoder unavailable
+        """
+        if self.autoencoder is None:
+            logger.warning("Autoencoder not loaded - cannot decode embeddings")
+            return None
+        
+        # Flatten for batch processing
+        original_shape = embeddings.shape
+        flat_embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+        
+        # Convert to tensor and decode
+        tensor_embeddings = torch.tensor(flat_embeddings, dtype=torch.float32).to(self.device)
+        decoded = self.autoencoder.decoder(tensor_embeddings)
+        
+        # Reshape back
+        decoded_np = decoded.cpu().numpy()
+        decoded_np = decoded_np.reshape(original_shape[0], original_shape[1], -1)
+        
+        return decoded_np
+    
+    def calculate_vector_validation_metrics(self, decoded_vectors, 
+                                            epsilon_values=[0, 1e-10, 1e-6, 1e-3, 1e-2]):
+        """
+        Comprehensive validation of decoded event vectors.
+        
+        Args:
+            decoded_vectors: Decoded vectors (N, seq_len, 128)
+            epsilon_values: List of epsilon tolerances for range checks
+            
+        Returns:
+            Dictionary containing all validation metrics
+        """
+        if decoded_vectors is None:
+            return {'error': 'No decoded vectors available'}
+        
+        logger.info("="*60)
+        logger.info("VECTOR VALIDATION METRICS")
+        logger.info("="*60)
+        
+        metrics = {}
+        
+        # Flatten to (N*seq_len, 128) for per-event analysis
+        flat_vectors = decoded_vectors.reshape(-1, decoded_vectors.shape[-1])
+        total_events = flat_vectors.shape[0]
+        total_values = flat_vectors.size
+        
+        logger.info(f"Validating {total_events} events ({total_values} total values)")
+        
+        # 1. Basic Range Validation with Epsilon Tolerance
+        metrics['range_validation'] = self._validate_range_with_epsilon(
+            flat_vectors, epsilon_values
+        )
+        
+        # 2. Per-Feature Statistics
+        metrics['feature_statistics'] = self._calculate_feature_statistics(flat_vectors)
+        
+        # 3. Categorical Feature Validation
+        metrics['categorical_validation'] = self._validate_categorical_features(flat_vectors)
+        
+        # 4. Binary Feature Validation
+        metrics['binary_validation'] = self._validate_binary_features(flat_vectors)
+        
+        # 5. Sparsity Analysis
+        metrics['sparsity_analysis'] = self._analyze_sparsity(flat_vectors)
+        
+        # 6. Event Type Consistency
+        metrics['event_type_consistency'] = self._validate_event_type_consistency(flat_vectors)
+        
+        # 7. Location Distribution Analysis
+        metrics['location_analysis'] = self._analyze_locations(flat_vectors)
+        
+        return metrics
+    
+    def _validate_range_with_epsilon(self, vectors, epsilon_values):
+        """
+        Check how many values fall outside [0, 1] range with various epsilon tolerances.
+        
+        Args:
+            vectors: Flattened vectors (N, 128)
+            epsilon_values: List of epsilon tolerances
+            
+        Returns:
+            Dictionary with range validation results per epsilon
+        """
+        results = {}
+        total_values = vectors.size
+        
+        logger.info("\n--- Range Validation (with epsilon tolerance) ---")
+        
+        for eps in epsilon_values:
+            below_zero = np.sum(vectors < (0 - eps))
+            above_one = np.sum(vectors > (1 + eps))
+            in_range = total_values - below_zero - above_one
+            
+            eps_key = f'eps_{eps}'
+            results[eps_key] = {
+                'epsilon': eps,
+                'total_values': int(total_values),
+                'below_zero_count': int(below_zero),
+                'above_one_count': int(above_one),
+                'in_range_count': int(in_range),
+                'below_zero_pct': float(below_zero / total_values * 100),
+                'above_one_pct': float(above_one / total_values * 100),
+                'in_range_pct': float(in_range / total_values * 100),
+            }
+            
+            # Also track the magnitude of violations
+            if below_zero > 0:
+                violations_below = vectors[vectors < (0 - eps)]
+                results[eps_key]['min_violation_below'] = float(np.min(violations_below))
+                results[eps_key]['mean_violation_below'] = float(np.mean(violations_below))
+            
+            if above_one > 0:
+                violations_above = vectors[vectors > (1 + eps)]
+                results[eps_key]['max_violation_above'] = float(np.max(violations_above))
+                results[eps_key]['mean_violation_above'] = float(np.mean(violations_above))
+            
+            logger.info(f"  eps={eps}: in_range={results[eps_key]['in_range_pct']:.4f}%, "
+                       f"below_0={results[eps_key]['below_zero_pct']:.4f}%, "
+                       f"above_1={results[eps_key]['above_one_pct']:.4f}%")
+        
+        return results
+    
+    def _calculate_feature_statistics(self, vectors):
+        """
+        Calculate statistics for each of the 128 features.
+        
+        Args:
+            vectors: Flattened vectors (N, 128)
+            
+        Returns:
+            Dictionary with per-feature statistics
+        """
+        logger.info("\n--- Per-Feature Statistics ---")
+        
+        results = {
+            'per_feature': {},
+            'summary': {}
+        }
+        
+        num_features = vectors.shape[1]
+        
+        for idx in range(num_features):
+            feature_values = vectors[:, idx]
+            feature_def = FEATURE_DEFINITIONS.get(idx, {'name': f'unknown_{idx}', 'type': 'unknown'})
+            
+            stats = {
+                'name': feature_def['name'],
+                'type': feature_def.get('type', 'unknown'),
+                'mean': float(np.mean(feature_values)),
+                'std': float(np.std(feature_values)),
+                'min': float(np.min(feature_values)),
+                'max': float(np.max(feature_values)),
+                'median': float(np.median(feature_values)),
+                'zero_pct': float(np.sum(feature_values == 0) / len(feature_values) * 100),
+                'negative_pct': float(np.sum(feature_values < 0) / len(feature_values) * 100),
+                'above_one_pct': float(np.sum(feature_values > 1) / len(feature_values) * 100),
+            }
+            
+            results['per_feature'][idx] = stats
+        
+        # Summary statistics
+        all_means = [results['per_feature'][i]['mean'] for i in range(num_features)]
+        all_stds = [results['per_feature'][i]['std'] for i in range(num_features)]
+        
+        results['summary'] = {
+            'num_features': num_features,
+            'avg_feature_mean': float(np.mean(all_means)),
+            'avg_feature_std': float(np.mean(all_stds)),
+            'features_with_negatives': sum(1 for i in range(num_features) 
+                                          if results['per_feature'][i]['negative_pct'] > 0),
+            'features_with_above_one': sum(1 for i in range(num_features) 
+                                          if results['per_feature'][i]['above_one_pct'] > 0),
+        }
+        
+        logger.info(f"  Features with negative values: {results['summary']['features_with_negatives']}")
+        logger.info(f"  Features with values > 1: {results['summary']['features_with_above_one']}")
+        
+        return results
+    
+    def _validate_categorical_features(self, vectors, tolerance=0.05):
+        """
+        Validate that categorical features have values close to valid discrete values.
+        
+        For a categorical with n categories, valid values are: 0, 1/n, 2/n, ..., n/n
+        
+        Args:
+            vectors: Flattened vectors (N, 128)
+            tolerance: Maximum allowed deviation from valid discrete value
+            
+        Returns:
+            Dictionary with categorical validation results
+        """
+        logger.info("\n--- Categorical Feature Validation ---")
+        
+        results = {'per_feature': {}, 'summary': {}}
+        total_valid = 0
+        total_checked = 0
+        
+        for idx, feature_def in FEATURE_DEFINITIONS.items():
+            if feature_def.get('type') != 'categorical':
+                continue
+            
+            num_categories = feature_def.get('num_categories', 1)
+            feature_values = vectors[:, idx]
+            
+            # Valid discrete values for this categorical
+            valid_values = [i / num_categories for i in range(num_categories + 1)]
+            
+            # Check each value against valid values
+            valid_count = 0
+            for val in feature_values:
+                is_valid = any(abs(val - valid_val) <= tolerance for valid_val in valid_values)
+                if is_valid:
+                    valid_count += 1
+            
+            valid_pct = valid_count / len(feature_values) * 100
+            
+            results['per_feature'][idx] = {
+                'name': feature_def['name'],
+                'num_categories': num_categories,
+                'valid_values': valid_values,
+                'valid_count': int(valid_count),
+                'total_count': int(len(feature_values)),
+                'valid_pct': float(valid_pct),
+                'tolerance': tolerance,
+            }
+            
+            total_valid += valid_count
+            total_checked += len(feature_values)
+        
+        results['summary'] = {
+            'total_categorical_features': len(results['per_feature']),
+            'overall_valid_pct': float(total_valid / total_checked * 100) if total_checked > 0 else 0,
+            'tolerance_used': tolerance,
+        }
+        
+        logger.info(f"  Categorical features valid: {results['summary']['overall_valid_pct']:.2f}% "
+                   f"(tolerance={tolerance})")
+        
+        return results
+    
+    def _validate_binary_features(self, vectors, tolerance=0.05):
+        """
+        Validate that binary features have values close to 0, 0.5, or 1.
+        
+        Binary features use CategoricalFeatureParser with categories [0, 1],
+        so valid normalized values are: 0 (not present), 0.5 (False), 1.0 (True)
+        
+        Args:
+            vectors: Flattened vectors (N, 128)
+            tolerance: Maximum allowed deviation
+            
+        Returns:
+            Dictionary with binary validation results
+        """
+        logger.info("\n--- Binary Feature Validation ---")
+        
+        results = {'per_feature': {}, 'summary': {}}
+        valid_binary_values = [0.0, 0.5, 1.0]
+        total_valid = 0
+        total_checked = 0
+        
+        for idx, feature_def in FEATURE_DEFINITIONS.items():
+            if feature_def.get('type') != 'binary':
+                continue
+            
+            feature_values = vectors[:, idx]
+            
+            # Check each value
+            valid_count = 0
+            value_distribution = {0.0: 0, 0.5: 0, 1.0: 0, 'other': 0}
+            
+            for val in feature_values:
+                matched = False
+                for valid_val in valid_binary_values:
+                    if abs(val - valid_val) <= tolerance:
+                        valid_count += 1
+                        value_distribution[valid_val] += 1
+                        matched = True
+                        break
+                if not matched:
+                    value_distribution['other'] += 1
+            
+            valid_pct = valid_count / len(feature_values) * 100
+            
+            results['per_feature'][idx] = {
+                'name': feature_def['name'],
+                'valid_count': int(valid_count),
+                'total_count': int(len(feature_values)),
+                'valid_pct': float(valid_pct),
+                'distribution': {k: int(v) for k, v in value_distribution.items()},
+            }
+            
+            total_valid += valid_count
+            total_checked += len(feature_values)
+        
+        results['summary'] = {
+            'total_binary_features': len(results['per_feature']),
+            'overall_valid_pct': float(total_valid / total_checked * 100) if total_checked > 0 else 0,
+            'tolerance_used': tolerance,
+        }
+        
+        logger.info(f"  Binary features valid: {results['summary']['overall_valid_pct']:.2f}% "
+                   f"(tolerance={tolerance})")
+        
+        return results
+    
+    def _analyze_sparsity(self, vectors, zero_threshold=0.01):
+        """
+        Analyze sparsity patterns in the vectors.
+        
+        Args:
+            vectors: Flattened vectors (N, 128)
+            zero_threshold: Values below this are considered zero
+            
+        Returns:
+            Dictionary with sparsity analysis
+        """
+        logger.info("\n--- Sparsity Analysis ---")
+        
+        results = {'per_feature': {}, 'summary': {}}
+        
+        expected_sparse_indices = [idx for idx, feat in FEATURE_DEFINITIONS.items() 
+                                   if feat.get('sparse', False)]
+        
+        for idx in range(vectors.shape[1]):
+            feature_values = vectors[:, idx]
+            zero_count = np.sum(np.abs(feature_values) < zero_threshold)
+            sparsity = zero_count / len(feature_values) * 100
+            
+            feature_def = FEATURE_DEFINITIONS.get(idx, {})
+            expected_sparse = feature_def.get('sparse', False)
+            
+            results['per_feature'][idx] = {
+                'name': feature_def.get('name', f'feature_{idx}'),
+                'sparsity_pct': float(sparsity),
+                'expected_sparse': expected_sparse,
+                'zero_count': int(zero_count),
+            }
+        
+        # Summary
+        avg_sparsity = np.mean([results['per_feature'][i]['sparsity_pct'] 
+                               for i in range(vectors.shape[1])])
+        sparse_feature_sparsity = np.mean([results['per_feature'][i]['sparsity_pct'] 
+                                          for i in expected_sparse_indices]) if expected_sparse_indices else 0
+        
+        results['summary'] = {
+            'overall_avg_sparsity_pct': float(avg_sparsity),
+            'expected_sparse_features_avg_sparsity': float(sparse_feature_sparsity),
+            'num_expected_sparse_features': len(expected_sparse_indices),
+        }
+        
+        logger.info(f"  Overall average sparsity: {avg_sparsity:.2f}%")
+        logger.info(f"  Sparse features (expected) avg sparsity: {sparse_feature_sparsity:.2f}%")
+        
+        return results
+    
+    def _validate_event_type_consistency(self, vectors, tolerance=0.05):
+        """
+        Validate that event type determines which features are non-zero.
+        
+        For example, shot events (type.id ≈ 0.3) should have non-zero shot features (71-83).
+        
+        Args:
+            vectors: Flattened vectors (N, 128)
+            tolerance: Tolerance for matching event type
+            
+        Returns:
+            Dictionary with consistency analysis
+        """
+        logger.info("\n--- Event Type Consistency ---")
+        
+        results = {}
+        
+        # Get event types (index 0)
+        event_types = vectors[:, 0]
+        
+        # Count events by type (binned)
+        type_bins = np.round(event_types * 34) / 34  # Round to nearest valid categorical
+        unique_types, type_counts = np.unique(type_bins, return_counts=True)
+        
+        results['event_type_distribution'] = {
+            float(t): int(c) for t, c in zip(unique_types, type_counts)
+        }
+        
+        # Check shot events specifically
+        shot_type_value = SHOT_EVENT_TYPE_NORMALIZED
+        is_shot = np.abs(event_types - shot_type_value) < tolerance
+        shot_count = np.sum(is_shot)
+        
+        if shot_count > 0:
+            shot_vectors = vectors[is_shot]
+            # Check if shot features (71-83) are non-zero for shot events
+            shot_features = shot_vectors[:, 71:84]
+            shot_features_active = np.sum(np.abs(shot_features) > 0.01, axis=1)
+            avg_active_shot_features = np.mean(shot_features_active)
+            
+            results['shot_events'] = {
+                'count': int(shot_count),
+                'percentage': float(shot_count / len(vectors) * 100),
+                'avg_active_shot_features': float(avg_active_shot_features),
+            }
+        else:
+            results['shot_events'] = {
+                'count': 0,
+                'percentage': 0.0,
+                'avg_active_shot_features': 0.0,
+            }
+        
+        # Check non-shot events don't have shot features active
+        non_shot_vectors = vectors[~is_shot]
+        if len(non_shot_vectors) > 0:
+            non_shot_shot_features = non_shot_vectors[:, 71:84]
+            non_shot_active = np.sum(np.abs(non_shot_shot_features) > 0.01)
+            
+            results['non_shot_events_with_shot_features'] = {
+                'count': int(non_shot_active),
+                'percentage': float(non_shot_active / non_shot_shot_features.size * 100),
+            }
+        
+        logger.info(f"  Shot events: {results['shot_events']['count']} "
+                   f"({results['shot_events']['percentage']:.2f}%)")
+        
+        return results
+    
+    def _analyze_locations(self, vectors):
+        """
+        Analyze location feature distributions (should be spread across the pitch).
+        
+        Args:
+            vectors: Flattened vectors (N, 128)
+            
+        Returns:
+            Dictionary with location analysis
+        """
+        logger.info("\n--- Location Distribution Analysis ---")
+        
+        results = {}
+        
+        # Primary location (indices 2, 3)
+        x_locations = vectors[:, 2]
+        y_locations = vectors[:, 3]
+        
+        results['primary_location'] = {
+            'x': {
+                'mean': float(np.mean(x_locations)),
+                'std': float(np.std(x_locations)),
+                'min': float(np.min(x_locations)),
+                'max': float(np.max(x_locations)),
+                'in_range_pct': float(np.sum((x_locations >= 0) & (x_locations <= 1)) / len(x_locations) * 100),
+            },
+            'y': {
+                'mean': float(np.mean(y_locations)),
+                'std': float(np.std(y_locations)),
+                'min': float(np.min(y_locations)),
+                'max': float(np.max(y_locations)),
+                'in_range_pct': float(np.sum((y_locations >= 0) & (y_locations <= 1)) / len(y_locations) * 100),
+            }
+        }
+        
+        # Check if locations are reasonably distributed (not all zeros or all ones)
+        x_spread = results['primary_location']['x']['std']
+        y_spread = results['primary_location']['y']['std']
+        
+        results['distribution_quality'] = {
+            'x_well_distributed': x_spread > 0.1,  # Reasonable spread
+            'y_well_distributed': y_spread > 0.1,
+            'x_spread': float(x_spread),
+            'y_spread': float(y_spread),
+        }
+        
+        logger.info(f"  Location X: mean={results['primary_location']['x']['mean']:.3f}, "
+                   f"std={x_spread:.3f}")
+        logger.info(f"  Location Y: mean={results['primary_location']['y']['mean']:.3f}, "
+                   f"std={y_spread:.3f}")
+        
+        return results
     
     def evaluate(self):
         """Run full evaluation."""
@@ -377,11 +1041,51 @@ class Evaluator:
         combined_score = self.calculate_combined_score(results)
         results['combined_score'] = combined_score
         logger.info(f"Combined Score: {combined_score:.4f}")
+        
+        # ================================================================
+        # Vector Validation (decode and validate 128-dim vectors)
+        # ================================================================
+        if self.autoencoder is not None:
+            logger.info("\nDecoding embeddings for vector validation...")
+            
+            # Decode generated samples
+            decoded_generated = self.decode_embeddings(generated)
+            
+            if decoded_generated is not None:
+                # Run comprehensive vector validation
+                vector_metrics = self.calculate_vector_validation_metrics(
+                    decoded_generated,
+                    epsilon_values=[0, 1e-10, 1e-6, 1e-3, 1e-2, 0.05]
+                )
+                results['vector_validation'] = vector_metrics
+                
+                # Also validate real samples for comparison
+                logger.info("\nValidating real samples for comparison...")
+                decoded_real = self.decode_embeddings(real)
+                if decoded_real is not None:
+                    real_vector_metrics = self.calculate_vector_validation_metrics(
+                        decoded_real,
+                        epsilon_values=[0, 1e-10, 1e-6, 1e-3, 1e-2, 0.05]
+                    )
+                    results['vector_validation_real'] = real_vector_metrics
+                
+                # Save decoded samples
+                decoded_path = os.path.join(self.args.output_dir, 
+                                           f"{self.model_type}_decoded_samples.pkl")
+                with open(decoded_path, 'wb') as f:
+                    pickle.dump({
+                        'decoded_generated': decoded_generated,
+                        'decoded_real': decoded_real
+                    }, f)
+                logger.info(f"Decoded samples saved to {decoded_path}")
+        else:
+            logger.warning("Autoencoder not available - skipping vector validation")
 
         # Save results
         output_path = os.path.join(self.args.output_dir, f"{self.model_type}_evaluation_results.json")
         with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2, default=float)
+            # Custom JSON encoder for nested dicts with numpy types
+            json.dump(results, f, indent=2, default=lambda x: float(x) if hasattr(x, 'item') else str(x))
         logger.info(f"Results saved to {output_path}")
 
         # Save samples
@@ -392,8 +1096,45 @@ class Evaluator:
                 'real': real
             }, f)
         logger.info(f"Samples saved to {samples_path}")
+        
+        # Print summary
+        self._print_validation_summary(results)
 
         return results
+    
+    def _print_validation_summary(self, results):
+        """Print a concise summary of validation results."""
+        logger.info("\n" + "="*60)
+        logger.info("EVALUATION SUMMARY")
+        logger.info("="*60)
+        
+        if 'statistical' in results:
+            logger.info(f"Fréchet Distance: {results['statistical'].get('frechet_distance', 'N/A'):.4f}")
+        
+        logger.info(f"Coverage: {results.get('coverage', 'N/A'):.4f}")
+        logger.info(f"Combined Score: {results.get('combined_score', 'N/A'):.4f}")
+        
+        if 'vector_validation' in results:
+            vv = results['vector_validation']
+            
+            # Range validation summary
+            if 'range_validation' in vv:
+                eps_0 = vv['range_validation'].get('eps_0', {})
+                logger.info(f"\nVector Range (eps=0):")
+                logger.info(f"  In range [0,1]: {eps_0.get('in_range_pct', 0):.2f}%")
+                logger.info(f"  Below 0: {eps_0.get('below_zero_pct', 0):.2f}%")
+                logger.info(f"  Above 1: {eps_0.get('above_one_pct', 0):.2f}%")
+            
+            # Categorical/Binary validation
+            if 'categorical_validation' in vv:
+                cat_valid = vv['categorical_validation'].get('summary', {}).get('overall_valid_pct', 0)
+                logger.info(f"  Categorical features valid: {cat_valid:.2f}%")
+            
+            if 'binary_validation' in vv:
+                bin_valid = vv['binary_validation'].get('summary', {}).get('overall_valid_pct', 0)
+                logger.info(f"  Binary features valid: {bin_valid:.2f}%")
+        
+        logger.info("="*60)
     
     def calculate_combined_score(self, results):
         """
