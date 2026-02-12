@@ -18,6 +18,45 @@ from diffusion_transformer.utils import setup_logging, get_logger
 logger = get_logger(__name__)
 
 
+def setup_gpu_optimizations():
+    """
+    Configure GPU optimizations for maximum performance.
+    Optimized for NVIDIA RTX A6000 and similar Ampere/Ada GPUs.
+    """
+    if not torch.cuda.is_available():
+        logger.warning("CUDA not available - running on CPU")
+        return
+    
+    # Log GPU info
+    gpu_id = torch.cuda.current_device()
+    gpu_name = torch.cuda.get_device_name(gpu_id)
+    gpu_memory = torch.cuda.get_device_properties(gpu_id).total_memory / (1024**3)
+    
+    logger.info(f"GPU Device: {gpu_id} - {gpu_name}")
+    logger.info(f"GPU Memory: {gpu_memory:.1f} GB")
+    
+    # Check CUDA_VISIBLE_DEVICES
+    visible_devices = os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')
+    logger.info(f"CUDA_VISIBLE_DEVICES: {visible_devices}")
+    
+    # Enable TF32 for Ampere GPUs (RTX 30xx, A100, A6000, etc.)
+    # TF32 provides significant speedup with minimal precision loss
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    logger.info("TF32 enabled for matrix operations (Ampere+ GPU optimization)")
+    
+    # Enable cuDNN auto-tuner for optimal convolution algorithms
+    torch.backends.cudnn.benchmark = True
+    logger.info("cuDNN benchmark mode enabled")
+    
+    # Set memory allocation strategy for large GPU memory
+    # This reduces fragmentation on GPUs with large VRAM (like RTX A6000)
+    if gpu_memory > 20:  # If GPU has more than 20GB VRAM
+        # Use expandable segments for better memory utilization
+        os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+        logger.info("Expandable memory segments enabled for large VRAM GPU")
+
+
 def set_seed(seed):
     """Set random seeds for reproducibility."""
     random.seed(seed)
@@ -25,6 +64,8 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        # Ensure deterministic behavior (slight performance cost)
+        torch.backends.cudnn.deterministic = True
 
 
 def parse_args():
@@ -49,7 +90,7 @@ def parse_args():
     # Data settings
     parser.add_argument("--min_gap", type=int, default=5)
     parser.add_argument("--max_gap", type=int, default=None)
-    parser.add_argument("--max_samples_per_match", type=int, default=100)
+    parser.add_argument("--max_samples_per_match", type=int, default=1000)
     parser.add_argument("--max_samples_total", type=int, default=20000000)
     parser.add_argument("--force_recompute", action="store_true", default=False)
     parser.add_argument("--sequence_length", type=int, default=50, help="Length of event sequences")
@@ -129,6 +170,9 @@ def main():
     logger.info(f"Step: {args.step}, Task: {args.task}, Model: {args.model_type}")
     logger.info(f"Device: {args.device}")
     logger.info(f"Random seed: {args.seed}")
+    
+    # Setup GPU optimizations (TF32, cuDNN benchmark, memory settings)
+    setup_gpu_optimizations()
 
     # Set seed for reproducibility
     set_seed(args.seed)
