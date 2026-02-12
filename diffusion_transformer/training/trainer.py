@@ -104,8 +104,11 @@ class Trainer:
         
         self.scheduler = optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
         
-        # Mixed precision training
-        self.scaler = GradScaler('cuda') if args.device == "cuda" else None
+        # Mixed precision training (enable for any CUDA device)
+        self.use_amp = torch.cuda.is_available() and 'cuda' in str(args.device)
+        self.scaler = GradScaler('cuda') if self.use_amp else None
+        if self.use_amp:
+            logger.info("Mixed precision training (AMP) enabled")
 
         # Training state
         self.current_epoch = 0
@@ -221,8 +224,8 @@ class Trainer:
             # Forward diffusion (add noise)
             x_t = self.diffusion.q_sample(x_0, t, noise)
             
-            # Predict noise
-            if self.scaler is not None:
+            # Predict noise with optional mixed precision
+            if self.use_amp:
                 with autocast('cuda'):
                     noise_pred = self.model(x_t, t)
                     loss = nn.functional.mse_loss(noise_pred, noise)
