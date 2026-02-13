@@ -3,8 +3,10 @@ Evaluation module with realism and diversity metrics.
 """
 
 import os
+import sys
 import torch
 import numpy as np
+from pathlib import Path
 from scipy import linalg
 from sklearn.metrics import pairwise_distances
 import pickle
@@ -424,3 +426,221 @@ class Evaluator:
         combined = (1 - w) * realism_score + w * diversity_score
         
         return combined
+
+
+class SequenceEvaluator:
+    """Evaluates sequences for illegal transitions and non-monotonic timestamps."""
+
+    def __init__(self, cache_dir=None, transition_tolerance=0.0, time_tolerance=0):
+        """
+        Initialize sequence evaluator.
+
+        Args:
+            cache_dir: Directory containing cache files (defaults to project_root/cache)
+            transition_tolerance: Minimum probability for valid transitions (0 = strict)
+            time_tolerance: Allowed time tolerance in seconds (0 = strict monotonic)
+        """
+        # Get project root (football_events_generation directory)
+        project_root = Path(__file__).resolve().parent.parent.parent
+
+        # Set cache directory relative to project root
+        if cache_dir is None:
+            self.cache_dir = project_root / 'cache'
+        else:
+            # If provided as relative path, make it relative to project root
+            cache_path = Path(cache_dir)
+            if cache_path.is_absolute():
+                self.cache_dir = cache_path
+            else:
+                self.cache_dir = project_root / cache_dir
+
+        self.cache_dir = str(self.cache_dir)
+        self.transition_tolerance = transition_tolerance
+        self.time_tolerance = time_tolerance
+
+        # Load or create transition matrix
+        self.transition_matrix_dir = os.path.join(self.cache_dir, 'transition_matrix')
+        self._load_or_create_transition_matrix()
+
+        # Feature indices from config (common features)
+        # Based on tokenizer config: type, play_pattern, location[0], location[1],
+        # duration, under_pressure, out, counterpress, period, second, position
+        # Plus special parsers: minute, team, possession_team, player
+        self.event_type_idx = 0
+        self.period_idx = 8
+        self.second_idx = 9
+        # Minute is a special parser at index 11 (after common categorical features)
+        self.minute_idx = 11
+
+    def _load_or_create_transition_matrix(self):
+        """Load transition matrix from cache or create if not found."""
+        prob_matrix_path = os.path.join(self.transition_matrix_dir, 'event_transition_probabilities.pkl')
+
+        if os.path.exists(prob_matrix_path):
+            logger.info(f"Loading transition matrix from {prob_matrix_path}")
+            import pandas as pd
+            self.prob_matrix = pd.read_pickle(prob_matrix_path)
+
+            with open(os.path.join(self.transition_matrix_dir, 'event_type_mapping.pkl'), 'rb') as f:
+                self.event_mapping = pickle.load(f)
+        else:
+            logger.info("Transition matrix not found, creating...")
+            self._create_transition_matrix()
+
+    def _create_transition_matrix(self):
+        """Create transition matrix using the create_transition_matrix module."""
+        from diffusion_transformer.evaluation.create_transition_matrix import create_transition_matrix
+
+        # Create matrix with custom output directory
+        prob_df, _, mapping = create_transition_matrix(
+            events_df_path=os.path.join(self.cache_dir, 'events_df.pkl')
+        )
+
+        self.prob_matrix = prob_df
+        self.event_mapping = mapping
+        logger.info("Transition matrix created successfully")
+
+    def _denormalize_event_type(self, normalized_value):
+        """Convert normalized event type back to event ID."""
+        from tokenizer.config import event_ids
+
+        all_event_ids = sorted(event_ids.values())
+        num_categories = len(all_event_ids)
+        original_index = int(round(normalized_value * (num_categories - 1)))
+        original_index = max(0, min(original_index, num_categories - 1))
+        return all_event_ids[original_index]
+
+    def _get_event_name(self, event_id):
+        """Get event name from event ID."""
+        idx = self.event_mapping['id_to_index'].get(event_id)
+        if idx is not None:
+            return self.event_mapping['index_to_name'][idx]
+        return None
+
+    def _extract_timestamp(self, event_vector):
+        """Extract timestamp from event vector (period, minute, second)."""
+        # Denormalize features
+        period = int(round(event_vector[self.period_idx] * 4)) + 1  # 1-5
+        minute = int(round(event_vector[self.minute_idx] * 59))  # 0-59
+        second = int(round(event_vector[self.second_idx] * 59))  # 0-59
+
+        # Convert to total seconds
+        # Each period is ~45 minutes (regulation) or ~15 minutes (extra time)
+        # Simplification: treat each period as 45 min for ordering purposes
+        total_seconds = (period - 1) * 45 * 60 + minute * 60 + second
+        return total_seconds, period, minute, second
+
+    def evaluate_sequence(self, sequence):
+        """
+        Evaluate a sequence of event vectors.
+
+        Args:
+            sequence: Array of shape (seq_len, feature_dim)
+
+        Returns:
+            dict with:
+                - passed: bool, whether sequence passes all checks
+                - violations: list of violation messages
+                - transition_violations: int, number of illegal transitions
+                - time_violations: int, number of time violations
+        """
+        violations = []
+        transition_violations = 0
+        time_violations = 0
+
+        # Extract event types
+        event_types_normalized = sequence[:, self.event_type_idx]
+        event_ids = [self._denormalize_event_type(val) for val in event_types_normalized]
+        event_names = [self._get_event_name(eid) for eid in event_ids]
+
+        # Check transitions
+        for i in range(len(sequence) - 1):
+            current_event = event_names[i]
+            next_event = event_names[i + 1]
+
+            if current_event is None or next_event is None:
+                # Ignored event type
+                continue
+
+            # Get transition probability
+            prob = self.prob_matrix.loc[current_event, next_event]
+
+            if prob < self.transition_tolerance:
+                transition_violations += 1
+                violations.append(
+                    f"Illegal transition at step {i}: {current_event} → {next_event} "
+                    f"(probability: {prob:.4f}, threshold: {self.transition_tolerance})"
+                )
+
+        # Check timestamps (monotonic increasing)
+        prev_timestamp = -1
+        for i in range(len(sequence)):
+            total_seconds, period, minute, second = self._extract_timestamp(sequence[i])
+
+            if total_seconds < prev_timestamp - self.time_tolerance:
+                time_violations += 1
+                violations.append(
+                    f"Non-monotonic timestamp at step {i}: "
+                    f"P{period} {minute:02d}:{second:02d} ({total_seconds}s) < "
+                    f"previous ({prev_timestamp}s), tolerance: {self.time_tolerance}s"
+                )
+
+            prev_timestamp = total_seconds
+
+        # Summary
+        passed = (transition_violations == 0 and time_violations == 0)
+
+        return {
+            'passed': passed,
+            'violations': violations,
+            'transition_violations': transition_violations,
+            'time_violations': time_violations,
+            'total_violations': len(violations)
+        }
+
+    def evaluate_batch(self, sequences):
+        """
+        Evaluate a batch of sequences.
+
+        Args:
+            sequences: Array of shape (batch_size, seq_len, feature_dim)
+
+        Returns:
+            dict with aggregated results
+        """
+        results = {
+            'total_sequences': len(sequences),
+            'passed_sequences': 0,
+            'failed_sequences': 0,
+            'total_transition_violations': 0,
+            'total_time_violations': 0,
+            'all_violations': []
+        }
+
+        for i, sequence in enumerate(sequences):
+            result = self.evaluate_sequence(sequence)
+
+            if result['passed']:
+                results['passed_sequences'] += 1
+            else:
+                results['failed_sequences'] += 1
+
+            results['total_transition_violations'] += result['transition_violations']
+            results['total_time_violations'] += result['time_violations']
+
+            if not result['passed']:
+                results['all_violations'].append({
+                    'sequence_idx': i,
+                    'violations': result['violations']
+                })
+
+        results['pass_rate'] = results['passed_sequences'] / results['total_sequences']
+
+        logger.info(f"Evaluated {results['total_sequences']} sequences:")
+        logger.info(f"  Passed: {results['passed_sequences']} ({results['pass_rate']:.2%})")
+        logger.info(f"  Failed: {results['failed_sequences']}")
+        logger.info(f"  Transition violations: {results['total_transition_violations']}")
+        logger.info(f"  Time violations: {results['total_time_violations']}")
+
+        return results
+
