@@ -501,14 +501,21 @@ class SequenceEvaluator:
         logger.info("Transition matrix created successfully")
 
     def _denormalize_event_type(self, normalized_value):
-        """Convert normalized event type back to event ID."""
+        """
+        Convert normalized event type back to event ID.
+
+        CategoricalFeatureParser encodes as: position / num_categories
+        where position is 1-indexed.  Denormalize: position = round(val * N),
+        then index = position - 1.
+        """
         from tokenizer.config import event_ids
 
         all_event_ids = sorted(event_ids.values())
         num_categories = len(all_event_ids)
-        original_index = int(round(normalized_value * (num_categories - 1)))
-        original_index = max(0, min(original_index, num_categories - 1))
-        return all_event_ids[original_index]
+        position = int(round(normalized_value * num_categories))
+        # Clamp to valid 1-indexed range
+        position = max(1, min(num_categories, position))
+        return all_event_ids[position - 1]
 
     def _get_event_name(self, event_id):
         """Get event name from event ID."""
@@ -518,16 +525,44 @@ class SequenceEvaluator:
         return None
 
     def _extract_timestamp(self, event_vector):
-        """Extract timestamp from event vector (period, minute, second)."""
-        # Denormalize features
-        period = int(round(event_vector[self.period_idx] * 4)) + 1  # 1-5
-        minute = int(round(event_vector[self.minute_idx] * 59))  # 0-59
-        second = int(round(event_vector[self.second_idx] * 59))  # 0-59
+        """
+        Extract timestamp from event vector (period, minute, second).
 
-        # Convert to total seconds
-        # Each period is ~45 minutes (regulation) or ~15 minutes (extra time)
-        # Simplification: treat each period as 45 min for ordering purposes
-        total_seconds = (period - 1) * 45 * 60 + minute * 60 + second
+        Denormalization follows the tokenizer's encoding conventions:
+        - period: CategoricalFeatureParser([1..5]) → normalized as position/5
+        - second: CategoricalFeatureParser([0..59]) → normalized as (index+1)/60
+        - minute: RangeFeatureParser(0, 60) → normalized as val/60
+          (minute is stored as period-relative offset by MinuteFeatureParser)
+        """
+        # Period: CategoricalFeatureParser("period", [1,2,3,4,5])
+        # Normalized: category_position / num_categories = position / 5
+        # Denormalize: position = round(value * 5), period = sorted_categories[pos-1]
+        # Since sorted categories are [1,2,3,4,5], period = round(value * 5)
+        period_raw = round(event_vector[self.period_idx] * 5)
+        period = max(1, min(5, int(period_raw)))
+
+        # Minute: RangeFeatureParser("minute", 0, 60)
+        # Normalized: val / 60, Denormalize: minute = round(value * 60)
+        minute = max(0, min(60, int(round(event_vector[self.minute_idx] * 60))))
+
+        # Second: CategoricalFeatureParser("second", [0..59])
+        # Normalized: (index + 1) / 60, Denormalize: second = round(value * 60) - 1
+        second_raw = round(event_vector[self.second_idx] * 60) - 1
+        second = max(0, min(59, int(second_raw)))
+
+        # Convert to total seconds for ordering
+        # Period 1-2: regulation halves (~45 min each)
+        # Period 3-4: extra time halves (~15 min each)
+        # Period 5: penalty shootout
+        # Minute is a period-relative offset from MinuteFeatureParser
+        if period <= 2:
+            period_base_seconds = (period - 1) * 45 * 60
+        elif period <= 4:
+            period_base_seconds = 90 * 60 + (period - 3) * 15 * 60
+        else:
+            period_base_seconds = 120 * 60  # penalty shootout
+
+        total_seconds = period_base_seconds + minute * 60 + second
         return total_seconds, period, minute, second
 
     def evaluate_sequence(self, sequence):

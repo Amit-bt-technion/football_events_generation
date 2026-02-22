@@ -22,7 +22,7 @@ class Generator:
     Handles loading models, sampling from noise, and creating visualizations.
     """
     
-    def __init__(self, args, events_dict: dict[str, np.ndarray], embeddings_dict: dict[str, np.ndarray]):
+    def __init__(self, args, events_dict: dict[str, np.ndarray] = None, embeddings_dict: dict[str, np.ndarray] = None):
         """
         Initialize generator.
         
@@ -81,7 +81,7 @@ class Generator:
         
         # Load checkpoint
         if args.checkpoint:
-            checkpoint = torch.load(args.checkpoint, map_location=self.device)
+            checkpoint = torch.load(args.checkpoint, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             logger.info(f"Loaded checkpoint from {args.checkpoint}")
         else:
