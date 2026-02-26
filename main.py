@@ -75,7 +75,7 @@ def parse_args():
     )
     
     # Task and modes paths
-    parser.add_argument("--step", type=str, default="train", choices=["train", "evaluate", "generate", "visualize"], help="Step to perform")
+    parser.add_argument("--step", type=str, default="train", choices=["train", "evaluate", "generate", "generate_valid", "visualize"], help="Step to perform")
     parser.add_argument("--task", type=str, default="full", choices=["full", "shot_only"], help="Task to perform")
     parser.add_argument("--task_params", type=str, default=None)
 
@@ -142,8 +142,12 @@ def parse_args():
     parser.add_argument("--diversity_weight", type=float, default=0.5, help="Weight for diversity in combined metrics (0=all realism, 1=all diversity)")
     
     # Generation parameters
-    parser.add_argument("--num_gen_samples", type=int, default=100, help="Number of samples to generate")
+    parser.add_argument("--num_gen_samples", type=int, default=100, help="Number of samples to generate per batch")
     parser.add_argument("--ddim_steps", type=int, default=50, help="Number of DDIM sampling steps (for faster generation)")
+    
+    # Valid generation parameters (for --step generate_valid)
+    parser.add_argument("--num_valid_sequences", type=int, default=100, help="Target number of valid sequences to collect")
+    parser.add_argument("--max_time_violations", type=int, default=0, help="Max allowed time violations per sequence (0=strict monotonic)")
     
     # Miscellaneous
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -208,6 +212,11 @@ def main():
             from diffusion_transformer.evaluation.generator import Generator
             generator = Generator(args, events_dict, embeddings_dict)
             generator.generate_and_visualize()
+
+        elif args.step in ["generate_valid"]:
+            from diffusion_transformer.evaluation.generator import Generator
+            generator = Generator(args, events_dict, embeddings_dict)
+            generator.generate_valid_sequences()
 
         elif args.step in ["visualize", "all"]:
             from diffusion_transformer.visualization.visualizer import Visualizer

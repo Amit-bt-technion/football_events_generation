@@ -6,7 +6,9 @@ import os
 import torch
 import numpy as np
 import pickle
+import pandas as pd
 from tqdm import tqdm
+from pathlib import Path
 
 from diffusion_transformer.models.diffusion import DiffusionProcess
 from diffusion_transformer.visualization.visualizer import Visualizer
@@ -307,21 +309,214 @@ class Generator:
         
         return all_samples, trajectory
 
+    def generate_valid_sequences(self):
+        """
+        Generate sequences in batches, evaluate each for validity using
+        SequenceEvaluator, and keep only valid ones until the target count
+        is reached.  Then run t-SNE visualisation and event-type distribution
+        analysis on the collected valid sequences.
 
-    def save_decoded_samples_csv(self, decoded_samples, latent_samples):
+        Validity criteria:
+            - 0 transition violations (strict)
+            - time_violations <= args.max_time_violations (configurable)
+        """
+        from diffusion_transformer.evaluation.evaluator import SequenceEvaluator
+
+        logger.info("=" * 60)
+        logger.info("GENERATE VALID SEQUENCES")
+        logger.info("=" * 60)
+
+        # ---- pre-flight checks ------------------------------------------------
+        if self.autoencoder is None:
+            raise RuntimeError(
+                "Autoencoder is required for generate_valid (decoding + evaluation). "
+                "Please provide a valid --autoencoder_path."
+            )
+
+        target = self.args.num_valid_sequences
+        batch_size = self.args.num_gen_samples
+        max_time_violations = self.args.max_time_violations
+        use_ddim = self.args.ddim_steps < self.args.num_timesteps
+
+        logger.info(f"Target valid sequences : {target}")
+        logger.info(f"Batch size             : {batch_size}")
+        logger.info(f"Max time violations    : {max_time_violations}")
+        logger.info("Transition tolerance   : 0 (strict)")
+        logger.info(f"Using DDIM sampling    : {use_ddim}")
+
+        # ---- initialise evaluator ---------------------------------------------
+        evaluator = SequenceEvaluator(
+            cache_dir=self.args.cache_dir,
+            transition_tolerance=0.0,        # strict – no illegal transitions
+            time_tolerance=0,                # per-event; we do per-sequence filtering below
+        )
+
+        # ---- collection loop ---------------------------------------------------
+        valid_latent = []      # latent embeddings  (N, seq_len, emb_dim)
+        valid_decoded = []     # decoded 128-dim     (N, seq_len, 128)
+        total_generated = 0
+        round_idx = 0
+
+        while len(valid_latent) < target:
+            round_idx += 1
+            needed = target - len(valid_latent)
+            current_batch = max(batch_size, needed)  # generate at least batch_size
+
+            logger.info(
+                f"\n--- Round {round_idx}: generating {current_batch} samples "
+                f"(collected {len(valid_latent)}/{target}) ---"
+            )
+
+            # generate latent samples
+            latent_samples = self.generate_samples(
+                current_batch, use_ddim=use_ddim, return_trajectory=False
+            )
+            total_generated += current_batch
+
+            # decode to 128-dim event vectors
+            decoded_samples = self.decode_samples(latent_samples)
+            if decoded_samples is None:
+                raise RuntimeError("Decoding returned None – autoencoder issue.")
+
+            # evaluate each sequence individually
+            for i in range(len(decoded_samples)):
+                result = evaluator.evaluate_sequence(decoded_samples[i])
+                is_valid = (
+                    result['transition_violations'] == 0
+                    and result['time_violations'] <= max_time_violations
+                )
+                if is_valid:
+                    valid_latent.append(latent_samples[i])
+                    valid_decoded.append(decoded_samples[i])
+                    if len(valid_latent) >= target:
+                        break
+
+            logger.info(
+                f"Round {round_idx} done – kept "
+                f"{len(valid_latent)}/{target} valid sequences "
+                f"(total generated so far: {total_generated})"
+            )
+
+        # stack into arrays
+        valid_latent = np.stack(valid_latent[:target], axis=0)
+        valid_decoded = np.stack(valid_decoded[:target], axis=0)
+
+        logger.info(f"\nCollection complete: {target} valid sequences "
+                     f"out of {total_generated} total generated")
+        logger.info(f"Valid latent shape : {valid_latent.shape}")
+        logger.info(f"Valid decoded shape: {valid_decoded.shape}")
+
+        # ---- save artefacts ---------------------------------------------------
+        output_dir = os.path.join(self.args.output_dir, 'valid_sequences')
+        os.makedirs(output_dir, exist_ok=True)
+
+        # pickle for downstream use
+        pkl_path = os.path.join(output_dir, f"{self.model_type}_valid_samples.pkl")
+        save_data = {
+            'latent': valid_latent,
+            'decoded': valid_decoded,
+            'model_type': self.model_type,
+            'total_generated': total_generated,
+            'target': target,
+            'max_time_violations': max_time_violations,
+            'args': vars(self.args),
+        }
+        with open(pkl_path, 'wb') as f:
+            pickle.dump(save_data, f)
+        logger.info(f"Saved valid samples to {pkl_path}")
+
+        # save decoded CSVs
+        self.save_decoded_samples_csv(valid_decoded, valid_latent,
+                                       output_subdir='valid_sequences/decoded_csvs')
+
+        # ---- post-analysis: t-SNE visualisation -------------------------------
+        logger.info("Running t-SNE visualisation on valid sequences...")
+        vis = Visualizer(self.args, self.events_dict, self.embeddings_dict)
+        # Temporarily redirect visualizer output into the valid_sequences subdir
+        original_output_dir = vis.output_dir
+        vis.output_dir = output_dir
+        vis.visualize_embedding_space(valid_latent)
+        vis.output_dir = original_output_dir
+
+        # ---- post-analysis: event type distribution ----------------------------
+        self.analyze_event_type_distribution(valid_decoded, output_dir)
+
+        logger.info("=" * 60)
+        logger.info(f"GENERATE VALID SEQUENCES completed – results in {output_dir}")
+        logger.info("=" * 60)
+
+        return valid_latent, valid_decoded
+
+    # ------------------------------------------------------------------
+    # Event-type distribution analysis
+    # ------------------------------------------------------------------
+    def analyze_event_type_distribution(self, decoded_sequences, output_dir):
+        """
+        Decode event types from 128-dim vectors using the boundary-based
+        mapping from ``extract_event_sequences``, compute counts and
+        percentages, and save as CSV.
+
+        Args:
+            decoded_sequences: np.ndarray of shape (N, seq_len, 128)
+            output_dir: directory to write the CSV into
+        """
+        # Import mapping utilities from extract_event_sequences
+        import sys
+        project_root = str(Path(__file__).resolve().parent.parent.parent)
+        if project_root not in sys.path:
+            sys.path.insert(0, project_root)
+        from extract_event_sequences import build_event_mapping, get_event_name
+
+        logger.info("Analysing event-type distribution of valid sequences...")
+
+        _, _, _, boundaries = build_event_mapping()
+
+        # Count events
+        from collections import Counter
+        event_counter = Counter()
+        total_events = 0
+
+        for seq in decoded_sequences:
+            for event_vec in seq:
+                raw_val = event_vec[0]  # feature 0 = event type
+                event_name, _, _ = get_event_name(raw_val, boundaries)
+                event_counter[event_name] += 1
+                total_events += 1
+
+        # Build dataframe sorted by count descending
+        rows = []
+        for event_name, count in event_counter.most_common():
+            rows.append({
+                'event_type': event_name,
+                'count': count,
+                'percentage': count / total_events * 100.0 if total_events else 0.0,
+            })
+
+        df = pd.DataFrame(rows)
+        csv_path = os.path.join(output_dir, 'event_type_distribution.csv')
+        df.to_csv(csv_path, index=False)
+
+        logger.info(f"Event type distribution ({len(df)} types, {total_events} total events) "
+                     f"saved to {csv_path}")
+        logger.info(f"\n{df.to_string(index=False)}")
+
+        return df
+
+
+    def save_decoded_samples_csv(self, decoded_samples, latent_samples, output_subdir='decoded_sequences'):
         """
         Save decoded samples as CSV files in a logical structure.
 
         Args:
             decoded_samples: Decoded event sequences (N, seq_len, event_features)
             latent_samples: Original latent embeddings (N, seq_len, embedding_dim)
+            output_subdir: Subdirectory under output_dir to write CSVs into
         """
-        import pandas as pd
 
         logger.info("Saving decoded samples as CSVs...")
 
         # Create output directory for decoded samples
-        decoded_dir = os.path.join(self.args.output_dir, 'decoded_sequences')
+        decoded_dir = os.path.join(self.args.output_dir, output_subdir)
         os.makedirs(decoded_dir, exist_ok=True)
 
         num_sequences, seq_len, num_features = decoded_samples.shape
@@ -329,7 +524,6 @@ class Generator:
         # Save each sequence as a separate CSV
         for seq_idx in range(num_sequences):
             sequence = decoded_samples[seq_idx]  # Shape: (seq_len, num_features)
-            latent = latent_samples[seq_idx]  # Shape: (seq_len, embedding_dim)
 
             # Create DataFrame with event features
             df = pd.DataFrame(sequence, columns=[f'feature_{i}' for i in range(num_features)])
