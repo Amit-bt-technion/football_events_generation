@@ -1210,7 +1210,7 @@ class SequenceEvaluator:
         self.event_type_idx = 0
         self.unified_time_idx = 8
         # Maximum total match seconds used for normalization (from UnifiedTimeParser)
-        self.MAX_MATCH_SECONDS = 10859
+        self.MAX_MATCH_SECONDS = 9059
 
     def _load_or_create_transition_matrix(self):
         """Load transition matrix from cache or create if not found."""
