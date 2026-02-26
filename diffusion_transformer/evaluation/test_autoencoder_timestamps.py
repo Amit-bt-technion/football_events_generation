@@ -169,17 +169,19 @@ def compare_timestamps(
     logger.info("=" * 70)
     logger.info(
         "%4s | %22s | %22s | %8s",
-        "Idx", "Original (P MM:SS tot)", "Reconstructed (P MM:SS tot)", "Δ(sec)",
+        "Idx", "Original (MM:SS tot)", "Reconstructed (MM:SS tot)", "Δ(sec)",
     )
     logger.info("-" * 70)
 
     for i in range(original.shape[1]):
-        o_tot, o_p, o_m, o_s = evaluator._extract_timestamp(original[0, i])
-        r_tot, r_p, r_m, r_s = evaluator._extract_timestamp(reconstructed[0, i])
+        o_tot = evaluator._extract_timestamp(original[0, i])
+        r_tot = evaluator._extract_timestamp(reconstructed[0, i])
         delta = r_tot - o_tot
+        o_min, o_sec = int(o_tot // 60), int(o_tot % 60)
+        r_min, r_sec = int(r_tot // 60), int(r_tot % 60)
         logger.info(
-            "%4d | P%d %02d:%02d %6ds | P%d %02d:%02d %6ds | %+6ds",
-            i, o_p, o_m, o_s, o_tot, r_p, r_m, r_s, r_tot, delta,
+            "%4d | %02d:%02d %6ds | %02d:%02d %6ds | %+6ds",
+            i, o_min, o_sec, int(o_tot), r_min, r_sec, int(r_tot), int(delta),
         )
 
 
@@ -234,11 +236,9 @@ def main() -> None:
     logger.info("RECONSTRUCTION ERROR SUMMARY")
     logger.info("=" * 70)
 
-    period_idx = evaluator.period_idx
-    second_idx = evaluator.second_idx
-    minute_idx = evaluator.minute_idx
+    unified_time_idx = evaluator.unified_time_idx
 
-    for label, idx in [("period", period_idx), ("second", second_idx), ("minute", minute_idx)]:
+    for label, idx in [("unified_time", unified_time_idx)]:
         orig_vals = events[:, :, idx]
         recon_vals = reconstructed[:, :, idx]
         mae = np.mean(np.abs(orig_vals - recon_vals))
@@ -251,16 +251,17 @@ def main() -> None:
     overall_mae = np.mean(np.abs(events - reconstructed))
     logger.info("  %-8s  MAE=%.6f", "overall", overall_mae)
 
-    # Show raw normalised value pairs for the first sequence's minute feature
-    logger.info("\n  Minute (idx %d) raw normalised values — first sequence:", minute_idx)
+    # Show raw normalised value pairs for the first sequence's unified time feature
+    logger.info("\n  Unified time (idx %d) raw normalised values — first sequence:", unified_time_idx)
+    MAX_MATCH_SECONDS = evaluator.MAX_MATCH_SECONDS
     for i in range(min(10, events.shape[1])):
-        o_val = events[0, i, minute_idx]
-        r_val = reconstructed[0, i, minute_idx]
-        o_min = round(o_val * 60)
-        r_min = round(r_val * 60)
+        o_val = events[0, i, unified_time_idx]
+        r_val = reconstructed[0, i, unified_time_idx]
+        o_sec = round(o_val * MAX_MATCH_SECONDS)
+        r_sec = round(r_val * MAX_MATCH_SECONDS)
         logger.info(
-            "    event %2d: orig=%.6f (→%2d min)  recon=%.6f (→%2d min)  Δ=%.6f",
-            i, o_val, o_min, r_val, r_min, r_val - o_val,
+            "    event %2d: orig=%.6f (→%5ds)  recon=%.6f (→%5ds)  Δ=%.6f",
+            i, o_val, o_sec, r_val, r_sec, r_val - o_val,
         )
 
     # ------------------------------------------------------------------

@@ -39,10 +39,10 @@ FEATURE_DEFINITIONS = {
     5: {'name': 'under_pressure', 'type': 'binary'},
     6: {'name': 'out', 'type': 'binary'},
     7: {'name': 'counterpress', 'type': 'binary'},
-    8: {'name': 'period', 'type': 'categorical', 'num_categories': 5},
-    9: {'name': 'second', 'type': 'categorical', 'num_categories': 60},
+    8: {'name': 'unified_time', 'type': 'range', 'min': 0, 'max': 1},
+    9: {'name': 'second_zeroed', 'type': 'zero'},
     10: {'name': 'position.id', 'type': 'categorical', 'num_categories': 25},
-    11: {'name': 'minute', 'type': 'range', 'min': 0, 'max': 60},
+    11: {'name': 'minute_zeroed', 'type': 'zero'},
     12: {'name': 'team.id', 'type': 'binary'},
     13: {'name': 'possession_team.id', 'type': 'binary'},
     14: {'name': 'player_position', 'type': 'range', 'min': 0, 'max': 1},
@@ -1205,13 +1205,12 @@ class SequenceEvaluator:
 
         # Feature indices from config (common features)
         # Based on tokenizer config: type, play_pattern, location[0], location[1],
-        # duration, under_pressure, out, counterpress, period, second, position
-        # Plus special parsers: minute, team, possession_team, player
+        # duration, under_pressure, out, counterpress, unified_time, second_zeroed, position
+        # Plus special parsers: minute_zeroed, team, possession_team, player
         self.event_type_idx = 0
-        self.period_idx = 8
-        self.second_idx = 9
-        # Minute is a special parser at index 11 (after common categorical features)
-        self.minute_idx = 11
+        self.unified_time_idx = 8
+        # Maximum total match seconds used for normalization (from UnifiedTimeParser)
+        self.MAX_MATCH_SECONDS = 10859
 
     def _load_or_create_transition_matrix(self):
         """Load transition matrix from cache or create if not found."""
@@ -1267,44 +1266,17 @@ class SequenceEvaluator:
 
     def _extract_timestamp(self, event_vector):
         """
-        Extract timestamp from event vector (period, minute, second).
+        Extract timestamp from event vector using the unified time feature.
 
-        Denormalization follows the tokenizer's encoding conventions:
-        - period: CategoricalFeatureParser([1..5]) → normalized as position/5
-        - second: CategoricalFeatureParser([0..59]) → normalized as (index+1)/60
-        - minute: RangeFeatureParser(0, 60) → normalized as val/60
-          (minute is stored as period-relative offset by MinuteFeatureParser)
+        The unified time at index 8 is normalised total match seconds:
+            total_seconds = normalised_value * MAX_MATCH_SECONDS
+
+        Returns:
+            total_seconds (float)
         """
-        # Period: CategoricalFeatureParser("period", [1,2,3,4,5])
-        # Normalized: category_position / num_categories = position / 5
-        # Denormalize: position = round(value * 5), period = sorted_categories[pos-1]
-        # Since sorted categories are [1,2,3,4,5], period = round(value * 5)
-        period_raw = round(event_vector[self.period_idx] * 5)
-        period = max(1, min(5, int(period_raw)))
-
-        # Minute: RangeFeatureParser("minute", 0, 60)
-        # Normalized: val / 60, Denormalize: minute = round(value * 60)
-        minute = max(0, min(60, int(round(event_vector[self.minute_idx] * 60))))
-
-        # Second: CategoricalFeatureParser("second", [0..59])
-        # Normalized: (index + 1) / 60, Denormalize: second = round(value * 60) - 1
-        second_raw = round(event_vector[self.second_idx] * 60) - 1
-        second = max(0, min(59, int(second_raw)))
-
-        # Convert to total seconds for ordering
-        # Period 1-2: regulation halves (~45 min each)
-        # Period 3-4: extra time halves (~15 min each)
-        # Period 5: penalty shootout
-        # Minute is a period-relative offset from MinuteFeatureParser
-        if period <= 2:
-            period_base_seconds = (period - 1) * 45 * 60
-        elif period <= 4:
-            period_base_seconds = 90 * 60 + (period - 3) * 15 * 60
-        else:
-            period_base_seconds = 120 * 60  # penalty shootout
-
-        total_seconds = period_base_seconds + minute * 60 + second
-        return total_seconds, period, minute, second
+        normalised_time = event_vector[self.unified_time_idx]
+        total_seconds = normalised_time * self.MAX_MATCH_SECONDS
+        return total_seconds
 
     def evaluate_sequence(self, sequence):
         """
@@ -1351,14 +1323,16 @@ class SequenceEvaluator:
         # Check timestamps (monotonic increasing)
         prev_timestamp = -1
         for i in range(len(sequence)):
-            total_seconds, period, minute, second = self._extract_timestamp(sequence[i])
+            total_seconds = self._extract_timestamp(sequence[i])
+            approx_min = int(total_seconds // 60)
+            approx_sec = int(total_seconds % 60)
 
             if total_seconds < prev_timestamp - self.time_tolerance:
                 time_violations += 1
                 violations.append(
                     f"Non-monotonic timestamp at step {i}: "
-                    f"P{period} {minute:02d}:{second:02d} ({total_seconds}s) < "
-                    f"previous ({prev_timestamp}s), tolerance: {self.time_tolerance}s"
+                    f"{approx_min:02d}:{approx_sec:02d} ({total_seconds:.0f}s) < "
+                    f"previous ({prev_timestamp:.0f}s), tolerance: {self.time_tolerance}s"
                 )
 
             prev_timestamp = total_seconds
