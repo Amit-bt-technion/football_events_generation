@@ -34,7 +34,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 NUM_SEQUENCES = 5
 SEQUENCE_LENGTH = 50
-AUTOENCODER_PATH = PROJECT_ROOT / "diffusion_transformer" / "models" / "autoencoder.pt"
+AUTOENCODER_PATH = PROJECT_ROOT / "diffusion_transformer" / "models" / "unified_time_autoencoder.pt"
 CACHE_DIR = PROJECT_ROOT / "cache"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
