@@ -149,8 +149,8 @@ def evaluate_directory(sequences_dir, cache_dir, output_dir=None):
 def main():
     """Main evaluation function."""
     # Define paths
-    project_root = Path(__file__).resolve().parent
-    outputs_dir = project_root / 'outputs' / 'evaluation'
+    project_root = Path(__file__).resolve().parent.parent.parent
+    outputs_dir = project_root / 'outputs'
     cache_dir = project_root / 'cache'
 
     logger.info("="*60)
@@ -161,7 +161,7 @@ def main():
 
     # Find all decoded_sequences_* directories
     decoded_dirs = sorted([d for d in outputs_dir.iterdir()
-                          if d.is_dir() and d.name.startswith('decoded_sequences_')])
+                          if d.is_dir() and d.name.startswith('decoded_seq')])
 
     if not decoded_dirs:
         logger.error(f"No decoded_sequences_* directories found in {outputs_dir}")
