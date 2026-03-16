@@ -144,6 +144,7 @@ def parse_args():
     # Generation parameters
     parser.add_argument("--num_gen_samples", type=int, default=100, help="Number of samples to generate per batch")
     parser.add_argument("--ddim_steps", type=int, default=50, help="Number of DDIM sampling steps (for faster generation)")
+    parser.add_argument("--num_gifs", type=int, default=10, help="Number of event sequence GIFs to create")
     
     # Valid generation parameters (for --step generate_valid)
     parser.add_argument("--num_valid_sequences", type=int, default=100, help="Target number of valid sequences to collect")

@@ -3,6 +3,7 @@ Visualization module for diffusion transformer outputs.
 """
 
 import os
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -16,6 +17,18 @@ from pathlib import Path
 from diffusion_transformer.utils import get_logger
 
 logger = get_logger(__name__)
+
+# Ensure project root is on sys.path so extract_event_sequences can be imported
+parent_dir = str(Path(__file__).resolve().parent)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+FIELD_IMAGE_PATH = os.path.join(parent_dir, 'football_field.jpg')
+
+# Pixel boundaries of the playing field inside football_field.jpg (612x408)
+FIELD_BOUNDS = {'left': 24, 'right': 588, 'top': 18, 'bottom': 374}
+
+TEAM_COLORS = {0: '#1f77b4', 1: '#d62728'}  # blue / red
 
 try:
     import umap
@@ -615,6 +628,85 @@ class Visualizer:
         
         logger.info(f"Metrics visualization saved to {output_path}")
     
+    def create_event_sequence_gifs(self, decoded_sequences, num_gifs=10):
+        """
+        Create animated GIFs showing events on the football field photo.
+
+        Each GIF spans 60 seconds total, with one frame per event showing the
+        event type label and a dot at its (x, y) position, colored by team.
+
+        Args:
+            decoded_sequences: np.ndarray of shape (N, seq_len, 128)
+            num_gifs: How many sequences to visualize
+        """
+        from extract_event_sequences import build_event_mapping, get_event_name
+
+        if decoded_sequences is None or len(decoded_sequences) == 0:
+            logger.warning("No decoded sequences for GIF visualization")
+            return
+
+        if not os.path.exists(FIELD_IMAGE_PATH):
+            logger.warning(f"Field image not found at {FIELD_IMAGE_PATH}, skipping GIFs")
+            return
+
+        field_img = plt.imread(FIELD_IMAGE_PATH)
+        _, _, _, boundaries = build_event_mapping()
+
+        n = min(num_gifs, len(decoded_sequences))
+        indices = np.random.choice(len(decoded_sequences), n, replace=False)
+
+        gif_dir = os.path.join(self.output_dir, 'sequence_gifs')
+        os.makedirs(gif_dir, exist_ok=True)
+
+        for seq_idx in indices:
+            seq = decoded_sequences[seq_idx]  # (seq_len, 128)
+            seq_len = len(seq)
+            interval_ms = 60_000 / seq_len
+
+            event_names = []
+            xs, ys, teams = [], [], []
+            for event_vec in seq:
+                name, _, _ = get_event_name(event_vec[0], boundaries)
+                event_names.append(name)
+                xs.append(event_vec[2] * 120)
+                ys.append(event_vec[3] * 80)
+                teams.append(0 if event_vec[12] < 0.75 else 1)
+
+            # Convert field coords to pixel coords
+            pxs = [FIELD_BOUNDS['left'] + (x / 120) * (FIELD_BOUNDS['right'] - FIELD_BOUNDS['left']) for x in xs]
+            pys = [FIELD_BOUNDS['top'] + (y / 80) * (FIELD_BOUNDS['bottom'] - FIELD_BOUNDS['top']) for y in ys]
+
+            fig, ax = plt.subplots(figsize=(10, 6.7))
+            ax.imshow(field_img)
+            ax.axis('off')
+
+            dot, = ax.plot([], [], 'o', markersize=14, markeredgecolor='white', markeredgewidth=1.5)
+            label = ax.text(0, 0, '', fontsize=10, fontweight='bold',
+                            ha='center', va='bottom', color='white',
+                            bbox=dict(boxstyle='round,pad=0.3', alpha=0.85, edgecolor='none'))
+            counter = ax.text(0.02, 0.97, '', transform=ax.transAxes,
+                              fontsize=9, va='top', color='white',
+                              bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
+
+            def update(frame):
+                color = TEAM_COLORS[teams[frame]]
+                dot.set_data([pxs[frame]], [pys[frame]])
+                dot.set_color(color)
+                label.set_position((pxs[frame], pys[frame] - 8))
+                label.set_text(event_names[frame])
+                label.get_bbox_patch().set_facecolor(color)
+                counter.set_text(f'Event {frame + 1}/{seq_len}')
+                return dot, label, counter
+
+            anim = FuncAnimation(fig, update, frames=seq_len,
+                                 interval=interval_ms, blit=True)
+            out_path = os.path.join(gif_dir, f'event_sequence_{seq_idx:04d}.gif')
+            anim.save(out_path, writer=PillowWriter(fps=max(1, round(1000 / interval_ms))))
+            plt.close(fig)
+            logger.info(f"Saved GIF: {out_path}")
+
+        logger.info(f"Created {n} event sequence GIFs in {gif_dir}")
+
     def visualize_all(self):
         """Create all visualizations from saved data."""
         logger.info("="*60)
@@ -622,6 +714,7 @@ class Visualizer:
         logger.info("="*60)
         
         # Load generated samples
+        decoded_sequences = None
         samples_path = os.path.join(self.output_dir, 'generated_samples.pkl')
         if os.path.exists(samples_path):
             with open(samples_path, 'rb') as f:
@@ -629,6 +722,7 @@ class Visualizer:
             
             samples = data.get('samples', data.get('generated'))
             trajectory = data.get('trajectory', [])
+            decoded_sequences = data.get('decoded_generated')
             
             if samples is not None:
                 self.visualize_generated_samples(samples[:50])
@@ -653,6 +747,11 @@ class Visualizer:
                 
                 if 'final' in cached:
                     self.visualize_generated_samples(cached['final'][:10])
+        
+        # Event sequence GIFs from decoded samples
+        num_gifs = getattr(self.args, 'num_gifs', 10)
+        if decoded_sequences is not None:
+            self.create_event_sequence_gifs(decoded_sequences, num_gifs)
         
         logger.info("="*60)
         logger.info("ALL VISUALIZATIONS COMPLETE")

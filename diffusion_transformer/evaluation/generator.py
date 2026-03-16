@@ -305,6 +305,10 @@ class Generator:
         if len(all_samples) >= 50:
             visualizer.visualize_embedding_space(all_samples)
         
+        # Event sequence GIFs
+        if decoded is not None:
+            visualizer.create_event_sequence_gifs(decoded, self.args.num_gifs)
+        
         logger.info("Visualization completed! Check output directory for results.")
         
         return all_samples, trajectory
@@ -436,6 +440,10 @@ class Generator:
         original_output_dir = vis.output_dir
         vis.output_dir = output_dir
         vis.visualize_embedding_space(valid_latent)
+
+        # ---- post-analysis: event sequence GIFs -------------------------------
+        vis.create_event_sequence_gifs(valid_decoded, self.args.num_gifs)
+
         vis.output_dir = original_output_dir
 
         # ---- post-analysis: event type distribution ----------------------------
