@@ -40,7 +40,8 @@ def load_sequence_from_csv(csv_path):
     return sequence
 
 
-def evaluate_directory(sequences_dir, cache_dir, output_dir=None):
+def evaluate_directory(sequences_dir, cache_dir, output_dir=None,
+                       timestamp_tolerance=0.0, transition_tolerance=0.0):
     """
     Evaluate all sequences in a directory.
 
@@ -48,6 +49,8 @@ def evaluate_directory(sequences_dir, cache_dir, output_dir=None):
         sequences_dir: Directory containing sequence CSV files
         cache_dir: Cache directory for transition matrix
         output_dir: Directory to save results (defaults to sequences_dir)
+        timestamp_tolerance: Per-event backward allowance in seconds (0 = strict)
+        transition_tolerance: Minimum transition probability threshold (0 = strict)
 
     Returns:
         Dictionary with evaluation results
@@ -59,10 +62,12 @@ def evaluate_directory(sequences_dir, cache_dir, output_dir=None):
 
     # Initialize evaluator
     logger.info(f"Initializing SequenceEvaluator with cache_dir: {cache_dir}")
+    logger.info(f"  timestamp_tolerance : {timestamp_tolerance}s")
+    logger.info(f"  transition_tolerance: {transition_tolerance}")
     evaluator = SequenceEvaluator(
         cache_dir=cache_dir,
-        transition_tolerance=0.0,  # Strict: no illegal transitions allowed
-        time_tolerance=0  # Strict: monotonic timestamps required
+        transition_tolerance=transition_tolerance,
+        time_tolerance=timestamp_tolerance,
     )
 
     # Find all sequence CSV files
@@ -140,7 +145,8 @@ def evaluate_directory(sequences_dir, cache_dir, output_dir=None):
     logger.info(f"Passed: {results['passed_sequences']} ({results['pass_rate']:.2%})")
     logger.info(f"Failed: {results['failed_sequences']}")
     logger.info(f"Total transition violations: {results['total_transition_violations']}")
-    logger.info(f"Total time violations: {results['total_time_violations']}")
+    logger.info(f"Total time violations (beyond {timestamp_tolerance}s): {results['total_time_violations']}")
+    logger.info(f"Total tolerance-zone events (within {timestamp_tolerance}s): {results['total_tolerance_zone_events']}")
     logger.info("="*60)
 
     return results
@@ -149,8 +155,8 @@ def evaluate_directory(sequences_dir, cache_dir, output_dir=None):
 def main():
     """Main evaluation function."""
     # Define paths
-    project_root = Path(__file__).resolve().parent
-    outputs_dir = project_root / 'outputs' / 'evaluation'
+    project_root = Path(__file__).resolve().parent.parent.parent
+    outputs_dir = project_root / "executions_log" / "2026-03-05-generate_evaluate" / "outputs"
     cache_dir = project_root / 'cache'
 
     logger.info("="*60)
@@ -161,7 +167,7 @@ def main():
 
     # Find all decoded_sequences_* directories
     decoded_dirs = sorted([d for d in outputs_dir.iterdir()
-                          if d.is_dir() and d.name.startswith('decoded_sequences_')])
+                          if d.is_dir() and d.name.startswith('decoded_sequences')])
 
     if not decoded_dirs:
         logger.error(f"No decoded_sequences_* directories found in {outputs_dir}")
@@ -192,7 +198,8 @@ def main():
                     'failed_sequences': results['failed_sequences'],
                     'pass_rate': results['pass_rate'],
                     'total_transition_violations': results['total_transition_violations'],
-                    'total_time_violations': results['total_time_violations']
+                    'total_time_violations': results['total_time_violations'],
+                    'total_tolerance_zone_events': results.get('total_tolerance_zone_events', 0),
                 }
         except Exception as e:
             logger.error(f"Error evaluating {decoded_dir.name}: {e}", exc_info=True)
@@ -214,6 +221,7 @@ def main():
             logger.info(f"  Passed/Total: {summary['passed_sequences']}/{summary['total_sequences']}")
             logger.info(f"  Transition violations: {summary['total_transition_violations']}")
             logger.info(f"  Time violations: {summary['total_time_violations']}")
+            logger.info(f"  Tolerance-zone events: {summary.get('total_tolerance_zone_events', 0)}")
     else:
         logger.warning("No results collected")
 

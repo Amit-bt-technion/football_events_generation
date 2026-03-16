@@ -336,19 +336,22 @@ class Generator:
         target = self.args.num_valid_sequences
         batch_size = self.args.num_gen_samples
         max_time_violations = self.args.max_time_violations
+        timestamp_tolerance = getattr(self.args, 'timestamp_tolerance', 0.0)
+        transition_tolerance = getattr(self.args, 'transition_tolerance', 0.0)
         use_ddim = self.args.ddim_steps < self.args.num_timesteps
 
-        logger.info(f"Target valid sequences : {target}")
-        logger.info(f"Batch size             : {batch_size}")
-        logger.info(f"Max time violations    : {max_time_violations}")
-        logger.info("Transition tolerance   : 0 (strict)")
-        logger.info(f"Using DDIM sampling    : {use_ddim}")
+        logger.info(f"Target valid sequences  : {target}")
+        logger.info(f"Batch size              : {batch_size}")
+        logger.info(f"Max time violations     : {max_time_violations}")
+        logger.info(f"Timestamp tolerance     : {timestamp_tolerance}s (per-event backward allowance)")
+        logger.info(f"Transition tolerance    : {transition_tolerance} (min probability threshold)")
+        logger.info(f"Using DDIM sampling     : {use_ddim}")
 
         # ---- initialise evaluator ---------------------------------------------
         evaluator = SequenceEvaluator(
             cache_dir=self.args.cache_dir,
-            transition_tolerance=0.0,        # strict – no illegal transitions
-            time_tolerance=0,                # per-event; we do per-sequence filtering below
+            transition_tolerance=transition_tolerance,
+            time_tolerance=timestamp_tolerance,
         )
 
         # ---- collection loop ---------------------------------------------------
@@ -356,45 +359,103 @@ class Generator:
         valid_decoded = []     # decoded 128-dim     (N, seq_len, 128)
         total_generated = 0
         round_idx = 0
+        max_total_generated = getattr(self.args, 'max_gen_attempts', 5_000_000)
+        unified_time_idx = 8
+        MAX_MATCH_SECONDS = 9059
 
         while len(valid_latent) < target:
+            if total_generated >= max_total_generated:
+                logger.warning(
+                    f"Reached max_gen_attempts={max_total_generated} with only "
+                    f"{len(valid_latent)}/{target} valid sequences. Stopping."
+                )
+                break
+
             round_idx += 1
             needed = target - len(valid_latent)
-            current_batch = max(batch_size, needed)  # generate at least batch_size
-
+            current_batch = max(batch_size, needed)
             logger.info(
                 f"\n--- Round {round_idx}: generating {current_batch} samples "
                 f"(collected {len(valid_latent)}/{target}) ---"
             )
 
-            # generate latent samples
             latent_samples = self.generate_samples(
                 current_batch, use_ddim=use_ddim, return_trajectory=False
             )
             total_generated += current_batch
 
-            # decode to 128-dim event vectors
             decoded_samples = self.decode_samples(latent_samples)
             if decoded_samples is None:
                 raise RuntimeError("Decoding returned None – autoencoder issue.")
 
-            # evaluate each sequence individually
+            # --- per-round diagnostics ---
+            round_valid = 0
+            round_time_only_fail = 0
+            round_trans_only_fail = 0
+            round_both_fail = 0
+            all_time_viols = []
+            all_trans_viols = []
+            all_backward_steps = []
+
             for i in range(len(decoded_samples)):
                 result = evaluator.evaluate_sequence(decoded_samples[i])
-                is_valid = (
-                    result['transition_violations'] == 0
-                    and result['time_violations'] <= max_time_violations
-                )
-                if is_valid:
+                tv = result['transition_violations']
+                tiv = result['time_violations']
+                time_ok = tiv <= max_time_violations
+                trans_ok = tv == 0
+
+                all_time_viols.append(tiv)
+                all_trans_viols.append(tv)
+
+                if trans_ok and time_ok:
+                    round_valid += 1
                     valid_latent.append(latent_samples[i])
                     valid_decoded.append(decoded_samples[i])
                     if len(valid_latent) >= target:
                         break
+                elif not trans_ok and not time_ok:
+                    round_both_fail += 1
+                elif not time_ok:
+                    round_time_only_fail += 1
+                else:
+                    round_trans_only_fail += 1
 
+            # Collect backward step magnitudes (first round only, for diagnosis)
+            if round_idx <= 2:
+                sample_size = min(100, len(decoded_samples))
+                for seq in decoded_samples[:sample_size]:
+                    times = seq[:, unified_time_idx] * MAX_MATCH_SECONDS
+                    for j in range(1, len(times)):
+                        if times[j] < times[j - 1]:
+                            all_backward_steps.append(times[j - 1] - times[j])
+
+                if all_backward_steps:
+                    bs = np.array(all_backward_steps)
+                    logger.info(
+                        f"  BACKWARD STEP DIAGNOSTIC (first {sample_size} seqs):\n"
+                        f"    total backward steps : {len(bs)}\n"
+                        f"    per sequence (avg)   : {len(bs) / sample_size:.1f}\n"
+                        f"    magnitude range      : {bs.min():.1f}s – {bs.max():.1f}s\n"
+                        f"    mean / median        : {bs.mean():.1f}s / {np.median(bs):.1f}s\n"
+                        f"    steps ≤ 3s           : {int(np.sum(bs <= 3))}\n"
+                        f"    steps in (3, 6]      : {int(np.sum((bs > 3) & (bs <= 6)))}\n"
+                        f"    steps in (6, 12]     : {int(np.sum((bs > 6) & (bs <= 12)))}\n"
+                        f"    steps in (12, 30]    : {int(np.sum((bs > 12) & (bs <= 30)))}\n"
+                        f"    steps > 30s          : {int(np.sum(bs > 30))}"
+                    )
+
+            yield_rate = round_valid / current_batch * 100
+            avg_time_viol = np.mean(all_time_viols) if all_time_viols else 0
+            avg_trans_viol = np.mean(all_trans_viols) if all_trans_viols else 0
             logger.info(
-                f"Round {round_idx} done – kept "
-                f"{len(valid_latent)}/{target} valid sequences "
-                f"(total generated so far: {total_generated})"
+                f"Round {round_idx} done – kept {round_valid}/{current_batch} valid "
+                f"({yield_rate:.1f}%) | collected {len(valid_latent)}/{target} | "
+                f"total generated: {total_generated}"
+            )
+            logger.info(
+                f"  Failure breakdown: time_only={round_time_only_fail}, "
+                f"trans_only={round_trans_only_fail}, both={round_both_fail} | "
+                f"avg time_viol={avg_time_viol:.2f}, avg trans_viol={avg_trans_viol:.2f}"
             )
 
         # stack into arrays
@@ -419,6 +480,8 @@ class Generator:
             'total_generated': total_generated,
             'target': target,
             'max_time_violations': max_time_violations,
+            'timestamp_tolerance': timestamp_tolerance,
+            'transition_tolerance': transition_tolerance,
             'args': vars(self.args),
         }
         with open(pkl_path, 'wb') as f:

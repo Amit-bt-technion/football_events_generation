@@ -1290,11 +1290,14 @@ class SequenceEvaluator:
                 - passed: bool, whether sequence passes all checks
                 - violations: list of violation messages
                 - transition_violations: int, number of illegal transitions
-                - time_violations: int, number of time violations
+                - time_violations: int, number of time violations beyond tolerance
+                - tolerance_zone_events: int, events that go backward in time but
+                  within the allowed timestamp_tolerance (not counted as violations)
         """
         violations = []
         transition_violations = 0
         time_violations = 0
+        tolerance_zone_events = 0
 
         # Extract event types
         event_types_normalized = sequence[:, self.event_type_idx]
@@ -1313,27 +1316,35 @@ class SequenceEvaluator:
             # Get transition probability
             prob = self.prob_matrix.loc[current_event, next_event]
 
-            if prob < self.transition_tolerance:
+            if prob <= self.transition_tolerance:
                 transition_violations += 1
                 violations.append(
                     f"Illegal transition at step {i}: {current_event} → {next_event} "
                     f"(probability: {prob:.4f}, threshold: {self.transition_tolerance})"
                 )
 
-        # Check timestamps (monotonic increasing)
+        # Check timestamps (monotonic increasing with optional tolerance)
         prev_timestamp = -1
         for i in range(len(sequence)):
             total_seconds = self._extract_timestamp(sequence[i])
             approx_min = int(total_seconds // 60)
             approx_sec = int(total_seconds % 60)
 
-            if total_seconds < prev_timestamp - self.time_tolerance:
-                time_violations += 1
-                violations.append(
-                    f"Non-monotonic timestamp at step {i}: "
-                    f"{approx_min:02d}:{approx_sec:02d} ({total_seconds:.0f}s) < "
-                    f"previous ({prev_timestamp:.0f}s), tolerance: {self.time_tolerance}s"
-                )
+            if total_seconds < prev_timestamp:
+                backward_by = prev_timestamp - total_seconds
+                if backward_by > self.time_tolerance:
+                    # True violation: backward step exceeds the allowed tolerance
+                    time_violations += 1
+                    violations.append(
+                        f"Non-monotonic timestamp at step {i}: "
+                        f"{approx_min:02d}:{approx_sec:02d} ({total_seconds:.0f}s) < "
+                        f"previous ({prev_timestamp:.0f}s) by {backward_by:.1f}s "
+                        f"(tolerance: {self.time_tolerance}s)"
+                    )
+                else:
+                    # Within tolerance: backward step is small enough to accept,
+                    # but we still record it so callers can audit the tolerance zone.
+                    tolerance_zone_events += 1
 
             prev_timestamp = total_seconds
 
@@ -1345,6 +1356,7 @@ class SequenceEvaluator:
             'violations': violations,
             'transition_violations': transition_violations,
             'time_violations': time_violations,
+            'tolerance_zone_events': tolerance_zone_events,
             'total_violations': len(violations)
         }
 
@@ -1356,7 +1368,9 @@ class SequenceEvaluator:
             sequences: Array of shape (batch_size, seq_len, feature_dim)
 
         Returns:
-            dict with aggregated results
+            dict with aggregated results, including:
+                - total_tolerance_zone_events: total events that went backward within
+                  the allowed timestamp tolerance (not counted as violations)
         """
         results = {
             'total_sequences': len(sequences),
@@ -1364,6 +1378,9 @@ class SequenceEvaluator:
             'failed_sequences': 0,
             'total_transition_violations': 0,
             'total_time_violations': 0,
+            'total_tolerance_zone_events': 0,
+            'timestamp_tolerance': self.time_tolerance,
+            'transition_tolerance': self.transition_tolerance,
             'all_violations': []
         }
 
@@ -1377,11 +1394,13 @@ class SequenceEvaluator:
 
             results['total_transition_violations'] += result['transition_violations']
             results['total_time_violations'] += result['time_violations']
+            results['total_tolerance_zone_events'] += result['tolerance_zone_events']
 
-            if not result['passed']:
+            if not result['passed'] or result['tolerance_zone_events'] > 0:
                 results['all_violations'].append({
                     'sequence_idx': i,
-                    'violations': result['violations']
+                    'violations': result['violations'],
+                    'tolerance_zone_events': result['tolerance_zone_events'],
                 })
 
         results['pass_rate'] = results['passed_sequences'] / results['total_sequences']
@@ -1390,7 +1409,8 @@ class SequenceEvaluator:
         logger.info(f"  Passed: {results['passed_sequences']} ({results['pass_rate']:.2%})")
         logger.info(f"  Failed: {results['failed_sequences']}")
         logger.info(f"  Transition violations: {results['total_transition_violations']}")
-        logger.info(f"  Time violations: {results['total_time_violations']}")
+        logger.info(f"  Time violations (beyond tolerance): {results['total_time_violations']}")
+        logger.info(f"  Tolerance-zone events (within {self.time_tolerance}s): {results['total_tolerance_zone_events']}")
 
         return results
 

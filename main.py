@@ -75,7 +75,7 @@ def parse_args():
     )
     
     # Task and modes paths
-    parser.add_argument("--step", type=str, default="train", choices=["train", "evaluate", "generate", "generate_valid", "visualize"], help="Step to perform")
+    parser.add_argument("--step", type=str, default="train", choices=["all", "train", "evaluate", "generate", "generate_valid", "visualize"], help="Step to perform")
     parser.add_argument("--task", type=str, default="full", choices=["full", "shot_only"], help="Task to perform")
     parser.add_argument("--task_params", type=str, default=None)
 
@@ -85,7 +85,7 @@ def parse_args():
     parser.add_argument("--output_dir", type=str, default="outputs", help="Directory for outputs (visualizations, results)")
     parser.add_argument("--autoencoder_path", type=str, default="diffusion_transformer/models/autoencoder.pt", help="Path to pre-trained autoencoder")
     parser.add_argument("--xg_model_path", type=str, default="diffusion_transformer/models/xg_model.pt", help="Path to pre-trained xG model")
-    parser.add_argument("--csv_dir", type=str, default="csv")
+    parser.add_argument("--csv_dir", type=str, default="../match_csv")
 
     # Data settings
     parser.add_argument("--min_gap", type=int, default=5)
@@ -148,6 +148,9 @@ def parse_args():
     # Valid generation parameters (for --step generate_valid)
     parser.add_argument("--num_valid_sequences", type=int, default=100, help="Target number of valid sequences to collect")
     parser.add_argument("--max_time_violations", type=int, default=0, help="Max allowed time violations per sequence (0=strict monotonic)")
+    parser.add_argument("--timestamp_tolerance", type=float, default=0.0, help="Per-event timestamp tolerance in seconds: a backward step smaller than this is NOT counted as a violation")
+    parser.add_argument("--transition_tolerance", type=float, default=0.0, help="Minimum transition probability to be considered valid (0=strict, any non-zero transition is legal)")
+    parser.add_argument("--max_gen_attempts", type=int, default=5_000_000, help="Safety cap on total generated sequences before aborting generate_valid (prevents infinite loops)")
     
     # Miscellaneous
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
