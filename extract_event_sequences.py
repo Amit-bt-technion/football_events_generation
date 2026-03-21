@@ -31,6 +31,12 @@ import numpy as np
 import argparse
 from pathlib import Path
 
+EVENT_TYPE_IDX = 0
+SECOND_IDX = 9
+MINUTE_IDX = 11
+MAX_MINUTE = 140
+MAX_SECOND = 60
+
 
 # =============================================================================
 # EVENT TYPE DEFINITIONS (from statsbomb_football_embeddings/tokenizer/config.py)
@@ -209,6 +215,54 @@ def find_shot_sequences(sequences, boundaries, all_normalized, prefer_ending=Tru
     return result
 
 
+def extract_timestamp(event_vector):
+    """
+    Convert the normalized minute/second features into discrete timestamp values.
+
+    Minute is denormalized to an integer in [0, 140].
+    Second is denormalized to an integer in [0, 60].
+    """
+    minute = int(np.clip(np.round(event_vector[MINUTE_IDX] * MAX_MINUTE), 0, MAX_MINUTE))
+    second = int(np.clip(np.round(event_vector[SECOND_IDX] * MAX_SECOND), 0, MAX_SECOND))
+    total_seconds = minute * 60 + second
+
+    # For display, fold second=60 into the next minute.
+    display_minute = total_seconds // 60
+    display_second = total_seconds % 60
+
+    return {
+        "minute": minute,
+        "second": second,
+        "display_minute": display_minute,
+        "display_second": display_second,
+        "total_seconds": total_seconds,
+    }
+
+
+def extract_timestamps(sequence):
+    """Extract timestamps for all events in a sequence."""
+    return [extract_timestamp(event) for event in sequence]
+
+
+def count_time_violations(sequence):
+    """
+    Count non-monotonic timestamp violations in a sequence.
+
+    A violation occurs when an event has an earlier (minute, second) timestamp
+    than the event immediately before it.
+    """
+    timestamps = extract_timestamps(sequence)
+    violation_count = 0
+    violation_positions = []
+
+    for i in range(1, len(timestamps)):
+        if timestamps[i]["total_seconds"] < timestamps[i - 1]["total_seconds"]:
+            violation_count += 1
+            violation_positions.append(i)
+
+    return violation_count, violation_positions, timestamps
+
+
 def extract_event_sequence(sequence, boundaries, include_details=False):
     """
     Extract event names from a sequence using boundary-based decoding.
@@ -222,7 +276,7 @@ def extract_event_sequence(sequence, boundaries, include_details=False):
         If include_details=False: List of event names
         If include_details=True: List of (event_name, exact_value, distance) tuples
     """
-    event_types = sequence[:, 0]  # First feature is event_type
+    event_types = sequence[:, EVENT_TYPE_IDX]
     results = [get_event_name(val, boundaries) for val in event_types]
     
     if include_details:
@@ -231,7 +285,16 @@ def extract_event_sequence(sequence, boundaries, include_details=False):
         return [name for name, _, _ in results]
 
 
-def print_sequence(seq_idx, events, shot_positions=None, title_prefix="", detailed_events=None):
+def print_sequence(
+    seq_idx,
+    events,
+    timestamps,
+    shot_positions=None,
+    title_prefix="",
+    detailed_events=None,
+    violation_count=0,
+    violation_positions=None,
+):
     """
     Pretty print a sequence of events.
     
@@ -241,6 +304,8 @@ def print_sequence(seq_idx, events, shot_positions=None, title_prefix="", detail
         shot_positions: Optional list of positions where shots occur
         title_prefix: Prefix for the title
         detailed_events: Optional list of (name, exact_val, distance) for showing decoding quality
+        violation_count: Number of non-monotonic time violations in the sequence
+        violation_positions: Positions where time violations occur
     """
     print(f"\n{'='*80}")
     title = f"{title_prefix}Sequence {seq_idx}"
@@ -248,15 +313,22 @@ def print_sequence(seq_idx, events, shot_positions=None, title_prefix="", detail
         title += f" (shots at positions: {shot_positions})"
     print(title)
     print('='*80)
+    print(f"Time violations: {violation_count}")
+    if violation_positions:
+        print(f"Violation positions: {violation_positions}")
     
     for i, event in enumerate(events):
         marker = " **SHOT**" if (shot_positions and i in shot_positions) else ""
+        timestamp = timestamps[i]
+        time_str = f"{timestamp['display_minute']:03d}:{timestamp['display_second']:02d}"
+        if violation_positions and i in violation_positions:
+            marker += " [TIME VIOLATION]"
         if detailed_events:
             name, exact_val, distance = detailed_events[i]
             quality = "✓" if distance < 0.01 else "~" if distance < 0.02 else "?"
-            print(f"  {i+1:2d}. {event:20s} {quality} (dist={distance:.4f}){marker}")
+            print(f"  {i+1:2d}. {event:20s} @ {time_str} {quality} (dist={distance:.4f}){marker}")
         else:
-            print(f"  {i+1:2d}. {event}{marker}")
+            print(f"  {i+1:2d}. {event:20s} @ {time_str}{marker}")
 
 
 def print_decoding_reference(boundaries, all_normalized):
@@ -394,6 +466,7 @@ Decoding Logic:
         analyze_decoding_quality(sequences, boundaries)
     
     output_lines = []
+    total_time_violations = 0
     
     # === RANDOM SEQUENCES ===
     print(f"\n\n{'#'*80}")
@@ -405,8 +478,22 @@ Decoding Logic:
     for seq_idx in random_indices:
         events = extract_event_sequence(sequences[seq_idx], boundaries, include_details=False)
         detailed = extract_event_sequence(sequences[seq_idx], boundaries, include_details=True) if args.show_details else None
-        print_sequence(seq_idx, events, title_prefix="[RANDOM] ", detailed_events=detailed)
-        output_lines.append(f"Random Sequence {seq_idx}: {' -> '.join(events)}")
+        violation_count, violation_positions, timestamps = count_time_violations(sequences[seq_idx])
+        total_time_violations += violation_count
+        event_summary = " -> ".join(
+            f"{event}@{ts['display_minute']:03d}:{ts['display_second']:02d}"
+            for event, ts in zip(events, timestamps)
+        )
+        print_sequence(
+            seq_idx,
+            events,
+            timestamps,
+            title_prefix="[RANDOM] ",
+            detailed_events=detailed,
+            violation_count=violation_count,
+            violation_positions=violation_positions,
+        )
+        output_lines.append(f"Random Sequence {seq_idx} [violations={violation_count}]: {event_summary}")
     
     # === SHOT-RELATED SEQUENCES ===
     print(f"\n\n{'#'*80}")
@@ -421,8 +508,25 @@ Decoding Logic:
         for i, (seq_idx, shot_positions) in enumerate(shot_sequences[:args.num_shots]):
             events = extract_event_sequence(sequences[seq_idx], boundaries, include_details=False)
             detailed = extract_event_sequence(sequences[seq_idx], boundaries, include_details=True) if args.show_details else None
-            print_sequence(seq_idx, events, shot_positions, title_prefix="[SHOT] ", detailed_events=detailed)
-            output_lines.append(f"Shot Sequence {seq_idx} (shots at {shot_positions}): {' -> '.join(events)}")
+            violation_count, violation_positions, timestamps = count_time_violations(sequences[seq_idx])
+            total_time_violations += violation_count
+            event_summary = " -> ".join(
+                f"{event}@{ts['display_minute']:03d}:{ts['display_second']:02d}"
+                for event, ts in zip(events, timestamps)
+            )
+            print_sequence(
+                seq_idx,
+                events,
+                timestamps,
+                shot_positions,
+                title_prefix="[SHOT] ",
+                detailed_events=detailed,
+                violation_count=violation_count,
+                violation_positions=violation_positions,
+            )
+            output_lines.append(
+                f"Shot Sequence {seq_idx} (shots at {shot_positions}) [violations={violation_count}]: {event_summary}"
+            )
     
     # === SUMMARY STATISTICS ===
     print(f"\n\n{'#'*80}")
@@ -444,6 +548,9 @@ Decoding Logic:
     total_events = len(all_events)
     
     print(f"\nTotal events: {total_events}")
+    overall_sequence_violations = [count_time_violations(seq)[0] for seq in sequences]
+    print(f"Total time violations across all sequences: {sum(overall_sequence_violations)}")
+    print(f"Sequences with at least one time violation: {sum(v > 0 for v in overall_sequence_violations)} / {len(sequences)}")
     print(f"\nEvent distribution:")
     for event, count in event_counts.most_common():
         pct = count / total_events * 100
