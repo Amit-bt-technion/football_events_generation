@@ -30,6 +30,48 @@ FIELD_BOUNDS = {'left': 24, 'right': 588, 'top': 18, 'bottom': 374}
 
 TEAM_COLORS = {0: '#1f77b4', 1: '#d62728'}  # blue / red
 
+
+def _render_sequence_frames(field_img, seq_len, pxs, pys, event_names, teams,
+                            title=None):
+    """
+    Render each event as an independent matplotlib figure and return a list
+    of PIL Images.  No artist reuse -- every frame is drawn from scratch so
+    colours are always correct.
+    """
+    from PIL import Image
+    import io
+
+    frames = []
+    for i in range(seq_len):
+        fig, ax = plt.subplots(figsize=(10, 6.7))
+        ax.imshow(field_img)
+        ax.axis('off')
+
+        color = TEAM_COLORS[teams[i]]
+        ax.scatter([pxs[i]], [pys[i]], s=200, zorder=5,
+                   facecolors=color, edgecolors='white', linewidths=1.5)
+        ax.text(pxs[i], pys[i] - 8, event_names[i], fontsize=10,
+                fontweight='bold', ha='center', va='bottom', color='white',
+                bbox=dict(boxstyle='round,pad=0.3', alpha=0.85,
+                          facecolor=color, edgecolor='none'))
+        ax.text(0.02, 0.97, f'Event {i + 1}/{seq_len}',
+                transform=ax.transAxes, fontsize=9, va='top', color='white',
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
+        if title:
+            ax.text(0.98, 0.97, title, transform=ax.transAxes,
+                    fontsize=11, fontweight='bold', va='top', ha='right',
+                    color='white',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='#333333', alpha=0.7))
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight', dpi=80)
+        plt.close(fig)
+        buf.seek(0)
+        frames.append(Image.open(buf).copy())
+        buf.close()
+    return frames
+
+
 try:
     import umap
     UMAP_AVAILABLE = True
@@ -661,7 +703,7 @@ class Visualizer:
         for seq_idx in indices:
             seq = decoded_sequences[seq_idx]  # (seq_len, 128)
             seq_len = len(seq)
-            interval_ms = 60_000 / seq_len
+            frame_duration_ms = int(60_000 / seq_len)
 
             event_names = []
             xs, ys, teams = [], [], []
@@ -672,37 +714,15 @@ class Visualizer:
                 ys.append(event_vec[3] * 80)
                 teams.append(0 if event_vec[12] < 0.75 else 1)
 
-            # Convert field coords to pixel coords
             pxs = [FIELD_BOUNDS['left'] + (x / 120) * (FIELD_BOUNDS['right'] - FIELD_BOUNDS['left']) for x in xs]
             pys = [FIELD_BOUNDS['top'] + (y / 80) * (FIELD_BOUNDS['bottom'] - FIELD_BOUNDS['top']) for y in ys]
 
-            fig, ax = plt.subplots(figsize=(10, 6.7))
-            ax.imshow(field_img)
-            ax.axis('off')
+            frames = _render_sequence_frames(
+                field_img, seq_len, pxs, pys, event_names, teams)
 
-            dot, = ax.plot([], [], 'o', markersize=14, markeredgecolor='white', markeredgewidth=1.5)
-            label = ax.text(0, 0, '', fontsize=10, fontweight='bold',
-                            ha='center', va='bottom', color='white',
-                            bbox=dict(boxstyle='round,pad=0.3', alpha=0.85, edgecolor='none'))
-            counter = ax.text(0.02, 0.97, '', transform=ax.transAxes,
-                              fontsize=9, va='top', color='white',
-                              bbox=dict(boxstyle='round,pad=0.2', facecolor='black', alpha=0.6))
-
-            def update(frame):
-                color = TEAM_COLORS[teams[frame]]
-                dot.set_data([pxs[frame]], [pys[frame]])
-                dot.set_color(color)
-                label.set_position((pxs[frame], pys[frame] - 8))
-                label.set_text(event_names[frame])
-                label.get_bbox_patch().set_facecolor(color)
-                counter.set_text(f'Event {frame + 1}/{seq_len}')
-                return dot, label, counter
-
-            anim = FuncAnimation(fig, update, frames=seq_len,
-                                 interval=interval_ms, blit=True)
             out_path = os.path.join(gif_dir, f'event_sequence_{seq_idx:04d}.gif')
-            anim.save(out_path, writer=PillowWriter(fps=max(1, round(1000 / interval_ms))))
-            plt.close(fig)
+            frames[0].save(out_path, save_all=True, append_images=frames[1:],
+                           duration=frame_duration_ms, loop=0)
             logger.info(f"Saved GIF: {out_path}")
 
         logger.info(f"Created {n} event sequence GIFs in {gif_dir}")
