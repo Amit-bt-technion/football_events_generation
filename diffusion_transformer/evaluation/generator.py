@@ -455,6 +455,114 @@ class Generator:
 
         return valid_latent, valid_decoded
 
+    def generate_for_matrix(self):
+        """
+        Generate a large number of sequences for transition matrix
+        construction.  No validity filtering, no per-sequence CSVs, no
+        visualisation – only the event-type column (feature 0) of each decoded
+        event is persisted, in chunked .npy files for resumability.
+
+        Output layout:
+            <output_dir>/event_types/batch_<idx:06d>.npy   # shape (B, seq_len, 1)
+            <output_dir>/generation_summary.json            # bookkeeping
+
+        Resumption:
+            On startup, existing batch_*.npy files are counted and the loop
+            continues from the next index until num_gen_samples is reached.
+        """
+        import json
+
+        logger.info("=" * 60)
+        logger.info("GENERATE FOR MATRIX (event-type column only)")
+        logger.info("=" * 60)
+
+        if self.autoencoder is None:
+            raise RuntimeError(
+                "Autoencoder is required for generate_for_matrix (decoding). "
+                "Please provide a valid --autoencoder_path."
+            )
+
+        target = int(self.args.num_gen_samples)
+        batch_size = min(1000, target)
+        use_ddim = self.args.ddim_steps < self.args.num_timesteps
+
+        logger.info(f"Target sequences   : {target}")
+        logger.info(f"Internal batch size: {batch_size}")
+        logger.info(f"Using DDIM sampling: {use_ddim}")
+
+        # Output directory for per-batch event-type chunks
+        event_types_dir = os.path.join(self.args.output_dir, 'event_types')
+        os.makedirs(event_types_dir, exist_ok=True)
+
+        # ---- resume bookkeeping ------------------------------------------
+        existing_files = sorted(Path(event_types_dir).glob('batch_*.npy'))
+        already_generated = 0
+        next_batch_idx = 0
+        for f in existing_files:
+            try:
+                arr_shape = np.load(f, mmap_mode='r').shape
+                already_generated += int(arr_shape[0])
+                # Parse index from filename batch_NNNNNN.npy
+                stem = f.stem  # e.g. "batch_000042"
+                idx = int(stem.split('_')[1])
+                next_batch_idx = max(next_batch_idx, idx + 1)
+            except Exception as e:
+                logger.warning(f"Could not read existing chunk {f}: {e}")
+
+        if already_generated > 0:
+            logger.info(f"Found {len(existing_files)} existing chunks "
+                        f"({already_generated} sequences); resuming from batch idx {next_batch_idx}")
+
+        # ---- generation loop ----------------------------------------------
+        from tqdm import tqdm
+        batch_idx = next_batch_idx
+        total_generated = already_generated
+        pbar = tqdm(total=target, initial=total_generated,
+                    desc="Generating", unit='seq')
+
+        while total_generated < target:
+            current_batch = min(batch_size, target - total_generated)
+
+            latent_samples = self.generate_samples(
+                current_batch, use_ddim=use_ddim, return_trajectory=False
+            )
+            decoded_samples = self.decode_samples(latent_samples)
+            if decoded_samples is None:
+                raise RuntimeError("Decoding returned None – autoencoder issue.")
+
+            # Keep only the event-type column (feature 0); shape (B, seq_len, 1)
+            event_type_chunk = decoded_samples[:, :, 0:1].astype(np.float32, copy=False)
+
+            chunk_path = os.path.join(event_types_dir, f'batch_{batch_idx:06d}.npy')
+            np.save(chunk_path, event_type_chunk)
+
+            total_generated += current_batch
+            batch_idx += 1
+            pbar.update(current_batch)
+
+        pbar.close()
+
+        # ---- summary ------------------------------------------------------
+        summary = {
+            'num_total_sequences': total_generated,
+            'sequence_length': int(self.args.sequence_length),
+            'batch_size': batch_size,
+            'num_chunks': batch_idx,
+            'output_dir': event_types_dir,
+            'use_ddim': bool(use_ddim),
+            'ddim_steps': int(self.args.ddim_steps),
+            'model_type': self.model_type,
+        }
+        summary_path = os.path.join(self.args.output_dir, 'generation_summary.json')
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+
+        logger.info("=" * 60)
+        logger.info(f"GENERATE FOR MATRIX completed – {total_generated} sequences "
+                    f"in {batch_idx} chunks at {event_types_dir}")
+        logger.info(f"Summary: {summary_path}")
+        logger.info("=" * 60)
+
     # ------------------------------------------------------------------
     # Event-type distribution analysis
     # ------------------------------------------------------------------

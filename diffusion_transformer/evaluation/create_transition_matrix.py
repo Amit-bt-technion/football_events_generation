@@ -187,8 +187,8 @@ def create_transition_matrix(events_df_path=None):
     logger.info("Saved pandas pickles")
 
     # Save as CSV for viewing
-    prob_df.to_csv(output_path / 'event_transition_probabilities.csv')
-    count_df.to_csv(output_path / 'event_transition_counts.csv')
+    prob_df.to_csv(output_path / 'event_transition_probabilities_original.csv')
+    count_df.to_csv(output_path / 'event_transition_counts_original.csv')
     logger.info("Saved CSVs")
 
     # Save mapping

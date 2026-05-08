@@ -75,7 +75,7 @@ def parse_args():
     )
     
     # Task and modes paths
-    parser.add_argument("--step", type=str, default="train", choices=["train", "evaluate", "generate", "generate_valid", "visualize"], help="Step to perform")
+    parser.add_argument("--step", type=str, default="train", choices=["train", "evaluate", "generate", "generate_valid", "generate_for_matrix", "visualize"], help="Step to perform")
     parser.add_argument("--task", type=str, default="full", choices=["full", "shot_only"], help="Task to perform")
     parser.add_argument("--task_params", type=str, default=None)
 
@@ -149,7 +149,7 @@ def parse_args():
     # Valid generation parameters (for --step generate_valid)
     parser.add_argument("--num_valid_sequences", type=int, default=100, help="Target number of valid sequences to collect")
     parser.add_argument("--max_time_violations", type=int, default=0, help="Max allowed time violations per sequence (0=strict monotonic)")
-    
+
     # Miscellaneous
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device to use")
@@ -218,6 +218,11 @@ def main():
             from diffusion_transformer.evaluation.generator import Generator
             generator = Generator(args, events_dict, embeddings_dict)
             generator.generate_valid_sequences()
+
+        elif args.step in ["generate_for_matrix"]:
+            from diffusion_transformer.evaluation.generator import Generator
+            generator = Generator(args, events_dict, embeddings_dict)
+            generator.generate_for_matrix()
 
         elif args.step in ["visualize", "all"]:
             from diffusion_transformer.visualization.visualizer import Visualizer

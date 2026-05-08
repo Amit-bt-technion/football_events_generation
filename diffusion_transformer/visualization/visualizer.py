@@ -138,7 +138,7 @@ class Visualizer:
             plt.colorbar(im, ax=ax)
         
         plt.tight_layout()
-        output_path = os.path.join(self.output_dir, 'diffusion_trajectory.png')
+        output_path = os.path.join(self.output_dir, 'diffusion_trajectory_forward.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         
